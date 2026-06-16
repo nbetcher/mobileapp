@@ -1,0 +1,15 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!-- Exported with NO permission attribute: every Binder transaction is authenticated in
+             code via CallerVerifier (allowlist + TOFU cert pinning), ADR-003 / HLDD-001 §8. -->
+        <service
+            android:name="coredevices.coreapp.automation.service.BridgeService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="coredevices.coreapp.automation.BridgeService" />
+            </intent-filter>
+        </service>
+    </application>
+
+</manifest>

@@ -137,5 +137,17 @@
                 <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />
             </intent-filter>
         </activity-alias>
+        <!-- Automation (Tasker bridge) client-consent review screen. Internal; launched by the
+             bridge's consent notification (ACTION_REVIEW), same-app. -->
+        <activity
+            android:name="coredevices.coreapp.automation.ConsentActivity"
+            android:exported="false"
+            android:label="Automation access"
+            android:theme="@android:style/Theme.Material.NoActionBar">
+            <intent-filter>
+                <action android:name="coredevices.coreapp.automation.REVIEW_CLIENTS" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>

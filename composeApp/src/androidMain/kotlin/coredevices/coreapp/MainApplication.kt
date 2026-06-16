@@ -30,6 +30,8 @@ import com.google.firebase.crashlytics.crashlytics
 import com.mmk.kmpnotifier.notification.NotifierManager
 import com.mmk.kmpnotifier.notification.configuration.NotificationPlatformConfiguration
 import coredevices.ExperimentalDevices
+import coredevices.coreapp.automation.AutomationBridge
+import coredevices.coreapp.automation.taskerModule
 import coredevices.coreapp.di.androidDefaultModule
 import coredevices.coreapp.di.apiModule
 import coredevices.coreapp.di.utilModule
@@ -58,6 +60,7 @@ class MainApplication : Application(), SingletonImageLoader.Factory {
     private val fileLogWriter: FileLogWriter by inject()
     private val coreConfigHolder: CoreConfigHolder by inject()
     private val pebbleBackgroundManager: PebbleBackgroundManager by inject()
+    private val automationBridge: AutomationBridge by inject()
 
     override fun onCreate() {
         super.onCreate()
@@ -74,6 +77,7 @@ class MainApplication : Application(), SingletonImageLoader.Factory {
                 apiModule,
                 utilModule,
                 watchModule,
+                taskerModule,
             )
         }
         initLogging()
@@ -89,6 +93,7 @@ class MainApplication : Application(), SingletonImageLoader.Factory {
         experimentalDevices.appInit()
         // Cactus telemetry is initialized via CommonAppDelegate.initCactus()
         pebbleAppDelegate.init()
+        automationBridge.init()
         configureStrictMode()
         NotifierManager.initialize(
             configuration = NotificationPlatformConfiguration.Android(

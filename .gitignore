@@ -15,6 +15,9 @@
 **/xcshareddata/WorkspaceSettings.xcsettings
 *.podspec
 *.jks
+*.p12
+*.keystore
+keystore.jks
 iosApp/iosApp.xcodeproj/xcuserdata
 iosApp/iosApp.xcworkspace/xcuserdata
 iosApp/iosApp/GoogleService-Info.plist

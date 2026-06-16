@@ -165,6 +165,7 @@ kotlin {
             implementation(libs.play.update.ktx)
             implementation(libs.coil.gif)
             implementation(libs.coredevices.haversine)
+            implementation(project(":tasker-bridge"))
         }
         androidInstrumentedTest.dependencies {
             implementation(libs.androidx.test.runner)
