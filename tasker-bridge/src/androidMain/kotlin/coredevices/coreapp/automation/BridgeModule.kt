@@ -30,7 +30,7 @@ val taskerModule = module {
     single { CallerVerifier(get(), get<ClientTrustStore>()) }
     single { ConsentController(get<Context>(), get()) }
     single<StateProvider> { LibPebbleStateProvider(get(), get<Context>()) }
-    single<CommandHandler> { LibPebbleCommandHandler(get<LibPebble>()) }
+    single<CommandHandler> { LibPebbleCommandHandler(get<LibPebble>(), get<EventDispatcher>()) }
     single { CommandExecutor(get<CommandHandler>()) }
     singleOf(::AutomationBridge)
 }

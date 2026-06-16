@@ -46,6 +46,7 @@ object CommandCatalog {
     const val SYSTEM_PING = "system.ping"
     const val WATCH_CONNECT = "watch.connect"
     const val WATCH_DISCONNECT = "watch.disconnect"
+    const val WATCH_SET_QUICK_LAUNCH = "watch.setQuickLaunch"
     const val DEV_TOGGLE_CONNECTION = "dev.toggleConnection"
 
     /** type -> minimum required tier. The set of keys IS the allowlist. */
@@ -57,6 +58,7 @@ object CommandCatalog {
         APPMESSAGE_SEND to CommandTier.NORMAL,
         SYSTEM_PING to CommandTier.NORMAL,
         WATCH_SET_PREF to CommandTier.SENSITIVE,
+        WATCH_SET_QUICK_LAUNCH to CommandTier.SENSITIVE,
         WATCH_CONNECT to CommandTier.SENSITIVE,
         WATCH_DISCONNECT to CommandTier.SENSITIVE,
         DEV_TOGGLE_CONNECTION to CommandTier.DANGEROUS,

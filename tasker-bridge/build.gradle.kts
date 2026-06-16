@@ -56,6 +56,9 @@ kotlin {
             dependencies {
                 implementation(libs.kotlin.test)
                 implementation(libs.coroutines.test)
+                // Relaxed mocks let the handler/collector tests simulate a connected watch (LibPebble)
+                // without a physical device — the only piece that genuinely needs hardware.
+                implementation("io.mockk:mockk:1.13.13")
             }
         }
     }
