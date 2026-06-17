@@ -120,19 +120,17 @@ CHANGELOG_FILE="$(mktemp)"
   echo '```'
 } > "$CHANGELOG_FILE"
 
-# --- 4. Tag the tasker branch so versionName resolves, and push it. ----------
-# The tag must point at the rebased tasker HEAD (current checkout).
-echo "publish.sh: tagging $TASKER_BRANCH as $TAG" >&2
-git tag -f "$TAG"
-
+# --- 4. Push the rebased tasker branch. --------------------------------------
+# The release tag is deliberately NOT pushed separately here: `gh release create
+# --target` (step 5) creates the tag atomically with the release, so a later
+# failure can never leave an orphaned tag with no release attached, and we never
+# force-clobber an existing tag (a name collision fails the create instead).
 if [ "$PUSH_TASKER" = "true" ]; then
-  echo "publish.sh: pushing $TASKER_BRANCH (force-with-lease) + tag $TAG" >&2
+  echo "publish.sh: pushing $TASKER_BRANCH (force-with-lease)" >&2
   # Force-with-lease: refuses if the remote moved unexpectedly (§4 step O).
   git push --force-with-lease origin "HEAD:refs/heads/${TASKER_BRANCH}" \
     || { echo "publish.sh: failed to push $TASKER_BRANCH" >&2; exit "$PUBLISH_EXIT"; }
 fi
-git push -f origin "refs/tags/${TAG}" \
-  || { echo "publish.sh: failed to push tag $TAG" >&2; exit "$PUBLISH_EXIT"; }
 
 # --- 5. Create the GitHub release with the APK + sha256 sidecar. --------------
 echo "publish.sh: creating GitHub release $TAG" >&2

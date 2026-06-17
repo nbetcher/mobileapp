@@ -128,9 +128,8 @@ jobs:
           java-version: "17"
 
       - name: Set up Android SDK (build-tools apksigner/zipalign)
-        # TODO(pin): replace @<pin-sha> with the commit SHA for
-        #   android-actions/setup-android@v3
-        uses: android-actions/setup-android@<pin-sha>
+        # TODO(pin §9): pin @v3 to its commit SHA before going live.
+        uses: android-actions/setup-android@v3
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -152,6 +151,17 @@ jobs:
         run: |
           sh tools/pipeline/lib/issue.sh CONFLICT \
             "Rebase conflict re-applying tasker onto upstream/master"
+
+      - name: Upload rerere cache on conflict
+        # rebase.sh syncs any freshly auto-recorded resolution into the in-repo
+        # rr-cache before aborting; preserve it as an artifact so the maintainer
+        # can commit it (the ephemeral runner would otherwise discard it).
+        if: failure() && steps.rebase.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rerere-cache
+          path: tools/pipeline/rr-cache/**
+          if-no-files-found: ignore
 
       # --- TAP-IMPACT (§4 G): anchor-comment grep on libpebble3. --------------
       - name: Tap-drift check
@@ -263,9 +273,8 @@ jobs:
 
       - name: Emulator boot smoke
         id: smoke
-        # TODO(pin): replace @<pin-sha> with the commit SHA for
-        #   reactivecircus/android-emulator-runner@v2
-        uses: reactivecircus/android-emulator-runner@<pin-sha>
+        # TODO(pin §9): pin @v2 to its commit SHA before going live.
+        uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35                 # tracks targetSdk (libs.versions.toml)
           target: google_apis
@@ -280,13 +289,30 @@ jobs:
           script: |
             set -eu
             adb wait-for-device
-            # Install the SIGNED release APK we just produced.
-            adb install -r app-release-signed.apk
-            # Launch the app's main activity and assert the process comes up.
-            adb shell monkey -p coredevices.coreapp -c android.intent.category.LAUNCHER 1
-            # Give it a moment to start the bridge service, then assert the
-            # process is alive (boot + bind self-check). Capture logcat for the
-            # issue body either way.
+            # The release APK ships only arm ABIs (real watches are arm), so on the
+            # x86_64 CI emulator it cannot be installed/launched. Treat an ABI
+            # mismatch as a logged SKIP (NOT a release-blocking failure); any OTHER
+            # install error still fails. A true on-device launch+bind smoke needs an
+            # arm64 runner or an x86-inclusive smoke build.
+            if ! install_out="$(adb install -r app-release-signed.apk 2>&1)"; then
+              echo "$install_out" >&2
+              case "$install_out" in
+                *NO_MATCHING_ABIS*)
+                  echo "smoke: SKIPPED — release APK is arm-only; x86_64 emulator can't run it." >&2
+                  exit 0 ;;
+                *)
+                  echo "smoke: install failed for a non-ABI reason." >&2
+                  exit 1 ;;
+              esac
+            fi
+            # Install succeeded (e.g. a future x86-inclusive build): real launch check.
+            # monkey returns 0 even on "No activities found", so check its output too.
+            launch_out="$(adb shell monkey -p coredevices.coreapp -c android.intent.category.LAUNCHER 1 2>&1)"
+            echo "$launch_out"
+            case "$launch_out" in
+              *"No activities found"*|*"monkey aborted"*)
+                echo "smoke: launch failed — $launch_out" >&2; exit 1 ;;
+            esac
             sleep 20
             adb logcat -d > /tmp/pipeline-logcat.txt 2>/dev/null || true
             if ! adb shell pidof coredevices.coreapp >/dev/null 2>&1; then
@@ -329,6 +355,22 @@ jobs:
         run: |
           sh tools/pipeline/lib/issue.sh PUBLISH-FAIL \
             "Release publish / state advance failed"
+
+      - name: Open generic pipeline-failure issue
+        # Catch-all so a failure in an UNGUARDED step (JDK/SDK setup, cache,
+        # provision, APK-resolve) still opens an issue -> §7 owner push, no silent
+        # red run. Excludes the steps that already open their own specific issue.
+        if: >-
+          failure()
+          && steps.rebase.outcome != 'failure'
+          && steps.tapcheck.outcome != 'failure'
+          && steps.build.outcome != 'failure'
+          && steps.sign.outcome != 'failure'
+          && steps.smoke.outcome != 'failure'
+          && steps.publish.outcome != 'failure'
+        run: |
+          sh tools/pipeline/lib/issue.sh PIPELINE-FAIL \
+            "Upstream-sync run failed in an unguarded step (see the run log)"
 
       - name: Summary
         if: success()

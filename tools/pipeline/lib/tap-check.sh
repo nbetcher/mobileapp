@@ -42,11 +42,13 @@ fi
 
 # The taps to verify, as space-separated  "<id>|<anchor-substr>|<callsite-substr>"
 # triples. Keep this list in sync with HOOKS.md §2 when taps are added/removed.
-#   notif-send   : a forwarded notification is mirrored to the integration.
-#   notif-action : a watch-initiated notification action is reported.
+#   notif-send     : a forwarded notification is mirrored to the integration.
+#   notif-action   : a watch-initiated notification action is reported.
+#   appmsg-received: an inbound watchapp AppMessage is reported (the AutoPebble channel).
 TAPS="
 notif-send|// BRIDGE-TAP: notif-send|AutomationNotificationHooks.onSent
 notif-action|// BRIDGE-TAP: notif-action|AutomationNotificationHooks.onAction
+appmsg-received|// BRIDGE-TAP: appmsg-received|AutomationAppMessageHook.onReceived
 "
 
 # Marker file the subshell appends drift detail to (the `while` loop below runs

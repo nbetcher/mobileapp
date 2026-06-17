@@ -40,9 +40,11 @@ class PerWatchCollector(
                     val id = device.identifier.asString
                     if (id !in jobs) jobs[id] = scope.launch { observe(device) }
 
-                    // Firmware status: emit on change (snapshot diffed off the watches snapshot).
+                    // Firmware status: emit only on a real change. Seed on first sight (prev == null)
+                    // so a freshly-seen connected watch doesn't emit a phantom 'Idle' status event.
                     val fw = device.firmwareUpdateState::class.simpleName ?: "Unknown"
-                    if (lastFw.put(id, fw) != fw) {
+                    val prevFw = lastFw.put(id, fw)
+                    if (prevFw != null && prevFw != fw) {
                         dispatcher.emit("system", "fw.status", device.toWatchRef(), mapOf("status" to fw))
                     }
                 }
@@ -52,9 +54,10 @@ class PerWatchCollector(
 
     private suspend fun observe(device: ConnectedPebbleDevice) = coroutineScope {
         launch {
-            device.runningApp.collect { uuid ->
+            // drop(1): skip the StateFlow's replayed current app on (re)subscribe; emit real launches.
+            device.runningApp.drop(1).collect { uuid ->
                 if (uuid != null) {
-                    dispatcher.emit("apps", "apps.run_state", device.toWatchRef(), mapOf("uuid" to uuid.toString()))
+                    dispatcher.emit("apps", "apps.run_state", device.toWatchRef(), mapOf("kind" to "app", "uuid" to uuid.toString()))
                 }
             }
         }

@@ -95,9 +95,10 @@ if [ "$rc" -eq 0 ]; then
 fi
 
 # --- 4. Conflict path. -------------------------------------------------------
-# rerere may have *recorded* (but not fully resolved) a new conflict; sync it
-# out so a human can commit it after resolving locally (runbook §8 step 4),
-# then abort to leave a clean tree.
+# rerere may have *recorded* (but not fully resolved) a new conflict; sync it out
+# to the in-repo cache so the workflow can upload it as an artifact (the ephemeral
+# runner can't commit it) for the maintainer to commit after resolving locally
+# (runbook §8 step 4); then abort to leave a clean tree.
 echo "rebase.sh: rebase hit conflicts; aborting." >&2
 sync_cache_out
 

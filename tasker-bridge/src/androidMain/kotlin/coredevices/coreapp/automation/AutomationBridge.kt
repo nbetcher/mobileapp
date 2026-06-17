@@ -8,11 +8,14 @@ import coredevices.coreapp.automation.events.AppMessageCollector
 import coredevices.coreapp.automation.events.NotificationCollector
 import coredevices.coreapp.automation.events.PerWatchCollector
 import coredevices.coreapp.automation.events.SystemEventCollector
+import io.rebble.libpebblecommon.automation.AutomationAppMessageHook
+import io.rebble.libpebblecommon.automation.AutomationNotificationHooks
 import io.rebble.libpebblecommon.connection.LibPebble
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelChildren
 
 /**
  * App-side endpoint of the automation (Tasker) integration — the one object the host app touches
@@ -49,5 +52,19 @@ class AutomationBridge(
         notifications.start(scope)
         appMessages.start(scope)
         listenerHub.start(scope)
+    }
+
+    /**
+     * Teardown counterpart to [init]: clears the process-global notification/appmessage hooks (so a
+     * stale lambda can't fire into a cancelled scope, and a re-created bridge re-registers cleanly)
+     * and cancels the running collectors. Safe to call repeatedly.
+     */
+    fun stop() {
+        if (!started) return
+        started = false
+        AutomationNotificationHooks.onSent = null
+        AutomationNotificationHooks.onAction = null
+        AutomationAppMessageHook.onReceived = null
+        scope.coroutineContext.cancelChildren()
     }
 }

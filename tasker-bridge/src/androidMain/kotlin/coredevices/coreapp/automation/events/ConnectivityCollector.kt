@@ -40,8 +40,10 @@ class ConnectivityCollector(
         scope.launch {
             val lastBattery = HashMap<String, Int>()
             libPebble.watches.collect { devices ->
+                val present = HashSet<String>()
                 for (device in devices) {
                     if (device is CommonConnectedDevice) {
+                        present.add(device.serial)
                         val level = device.batteryLevel ?: continue
                         if (lastBattery.put(device.serial, level) != level) {
                             dispatcher.emit(
@@ -53,6 +55,8 @@ class ConnectivityCollector(
                         }
                     }
                 }
+                // Evict departed watches so the map doesn't leak and a reconnect re-emits battery.
+                lastBattery.keys.retainAll(present)
             }
         }
     }

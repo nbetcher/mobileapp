@@ -17,9 +17,16 @@ class AppMessageCollector(
         AutomationAppMessageHook.onReceived = { uuid, data ->
             val args = buildMap {
                 put("uuid", uuid)
-                data.forEach { (key, value) -> put("d.$key", value.toString()) }
+                data.forEach { (key, value) -> put("d.$key", stringifyValue(value)) }
             }
             dispatcher.emit(category = "apps", type = "appmsg.received", data = args)
         }
+    }
+
+    /** Byte payloads must be hex-encoded; a (U)ByteArray.toString() is a useless identity hash. */
+    private fun stringifyValue(value: Any): String = when (value) {
+        is UByteArray -> value.joinToString("") { it.toString(16).padStart(2, '0') }
+        is ByteArray -> value.joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }
+        else -> value.toString()
     }
 }

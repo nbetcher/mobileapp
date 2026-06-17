@@ -2,6 +2,8 @@ package coredevices.coreapp.automation.events
 
 import io.rebble.libpebblecommon.connection.LibPebble
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.buffer
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 
 /**
@@ -18,8 +20,10 @@ class SystemEventCollector(
 ) {
     fun start(scope: CoroutineScope) {
         scope.launch {
+            var hadCall = false
             libPebble.currentCall.collect { call ->
                 if (call != null) {
+                    hadCall = true
                     dispatcher.emit(
                         category = "calls",
                         type = "calls.state",
@@ -29,11 +33,15 @@ class SystemEventCollector(
                             "name" to (call.contactName ?: ""),
                         ),
                     )
+                } else if (hadCall) {
+                    // Call ended: emit the closing transition so a 'while in call' automation can reset.
+                    hadCall = false
+                    dispatcher.emit(category = "calls", type = "calls.state", data = mapOf("state" to "Ended"))
                 }
             }
         }
         scope.launch {
-            libPebble.userFacingErrors.collect { error ->
+            libPebble.userFacingErrors.buffer(64).collect { error ->
                 dispatcher.emit(
                     category = "system",
                     type = "system.error",
@@ -50,7 +58,7 @@ class SystemEventCollector(
             }
         }
         scope.launch {
-            libPebble.activeWatchface.collect { face ->
+            libPebble.activeWatchface.drop(1).collect { face ->
                 if (face != null) {
                     dispatcher.emit(
                         category = "apps",

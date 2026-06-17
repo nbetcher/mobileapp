@@ -2,6 +2,7 @@ package coredevices.coreapp.automation.events
 
 import io.rebble.libpebblecommon.automation.AutomationNotificationHooks
 import kotlinx.coroutines.CoroutineScope
+import kotlin.concurrent.Volatile
 
 /**
  * Bridges the libpebble3 notification hooks (the ⚠ patch taps, HOOKS.md §2.2) into bridge events:
@@ -17,9 +18,11 @@ class NotificationCollector(
     private val dispatcher: EventDispatcher,
 ) {
     /** When false, only the source package is emitted (no title/body). Default OFF (PLAN §5.4). */
+    @Volatile
     var contentEnabled: Boolean = false
 
     /** When true, the body is dropped even if content is enabled (title + package only). */
+    @Volatile
     var redactContent: Boolean = true
 
     @Suppress("UNUSED_PARAMETER")
