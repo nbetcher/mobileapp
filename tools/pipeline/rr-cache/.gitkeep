@@ -1,0 +1,12 @@
+# Committed git-rerere cache (HLDD-004 §2, §4 step D, §8 step 4).
+#
+# When a maintainer resolves a rebase conflict locally during the conflict
+# runbook (docs/runbooks/conflict-resolution.md), they export the recorded
+# resolution from .git/rr-cache into THIS directory and commit it, so the cloud
+# pipeline (tools/pipeline/lib/rebase.sh) replays the same resolution on the
+# ephemeral runner next time and the rebase stays clean.
+#
+# Each recorded resolution is a subdirectory named by rerere's conflict hash,
+# containing `preimage` and `postimage` files. This .gitkeep just ensures the
+# directory exists in a fresh clone (rerere has nothing to replay until the
+# first conflict is resolved and committed).

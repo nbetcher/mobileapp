@@ -7,6 +7,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import co.touchlab.kermit.Logger
+import io.rebble.libpebblecommon.automation.AutomationNotificationHooks
 import io.rebble.libpebblecommon.connection.NotificationApps
 import io.rebble.libpebblecommon.database.entity.BaseAction
 import io.rebble.libpebblecommon.database.entity.MuteState
@@ -150,6 +151,11 @@ class AndroidNotificationActionHandler(
                     return errorResponse()
                 }
         logger.d { "Handling notification action on itemId $itemId: ${notificationAction.type}" }
+        // BRIDGE-TAP: notif-action
+        // Automation hook (ADR-008): report the watch-initiated action to an external integration.
+        runCatching {
+            AutomationNotificationHooks.onAction?.invoke(notificationAction.type.name, notificationAction.packageName)
+        }
         return when (notificationAction.type) {
             LibPebbleNotificationAction.ActionType.Reply -> handleReply(
                 attributes,

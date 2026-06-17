@@ -4,6 +4,10 @@ import co.touchlab.kermit.Logger
 import coredevices.coreapp.automation.events.ConnectivityCollector
 import coredevices.coreapp.automation.events.EventDispatcher
 import coredevices.coreapp.automation.events.ListenerHub
+import coredevices.coreapp.automation.events.AppMessageCollector
+import coredevices.coreapp.automation.events.NotificationCollector
+import coredevices.coreapp.automation.events.PerWatchCollector
+import coredevices.coreapp.automation.events.SystemEventCollector
 import io.rebble.libpebblecommon.connection.LibPebble
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
@@ -28,6 +32,10 @@ class AutomationBridge(
     )
 
     private val connectivity = ConnectivityCollector(libPebble, dispatcher)
+    private val perWatch = PerWatchCollector(libPebble, dispatcher)
+    private val system = SystemEventCollector(libPebble, dispatcher)
+    private val notifications = NotificationCollector(dispatcher)
+    private val appMessages = AppMessageCollector(dispatcher)
     private var started = false
 
     /** Idempotent. Call once from the host Application after Koin starts. */
@@ -36,6 +44,10 @@ class AutomationBridge(
         started = true
         logger.i { "init bootId=${dispatcher.bootId}" }
         connectivity.start(scope)
+        perWatch.start(scope)
+        system.start(scope)
+        notifications.start(scope)
+        appMessages.start(scope)
         listenerHub.start(scope)
     }
 }

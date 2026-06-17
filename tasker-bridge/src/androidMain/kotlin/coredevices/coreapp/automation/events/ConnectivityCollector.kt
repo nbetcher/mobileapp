@@ -57,13 +57,3 @@ class ConnectivityCollector(
         }
     }
 }
-
-private fun CommonConnectedDevice.toWatchRef(): WatchRef = WatchRef(
-    serial = serial,
-    name = name,
-    nickname = nickname,
-    model = watchInfo.board,
-    fw = runningFwVersion,
-    battery = batteryLevel,
-    address = identifier.asString,
-)

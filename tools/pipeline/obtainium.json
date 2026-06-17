@@ -1,0 +1,20 @@
+{
+  "_comment": [
+    "Obtainium source descriptor for the Pebble app fork (HLDD-004 §2/§4 step Q).",
+    "Import into Obtainium via: Add App -> (paste the fork releases URL) OR",
+    "Settings -> Import/Export -> Import from JSON (this file, wrapped as an",
+    "export uses an `apps` array; a single-app import accepts this object).",
+    "GitHub source type; Obtainium polls the fork's Releases and offers an",
+    "install when a newer build appears. Tracking is by versionCode (the",
+    "nanogiants commit-count metric, §3), so each upstream commit that lands",
+    "produces a higher versionCode -> Obtainium detects the update.",
+    "TODO(repo): replace OWNER/REPO below with the real fork repo slug."
+  ],
+  "id": "coredevices.coreapp",
+  "url": "https://github.com/OWNER/REPO",
+  "author": "OWNER",
+  "name": "Pebble (tasker fork)",
+  "preferredApkIndex": 0,
+  "additionalSettings": "{\"includePrereleases\":false,\"fallbackToOlderReleases\":true,\"filterReleaseTitlesByRegEx\":\"\",\"filterReleaseNotesByRegEx\":\"\",\"verifyLatestTag\":false,\"dontSortReleasesList\":false,\"useLatestAssetDateAsReleaseDate\":false,\"releaseTitleAsVersion\":false,\"trackOnly\":false,\"versionExtractionRegEx\":\"\",\"matchGroupToUse\":\"\",\"versionDetection\":true,\"useVersionCodeAsOSVersion\":true,\"apkFilterRegEx\":\"app-release.*\\\\.apk$\",\"invertAPKFilter\":false,\"autoApkFilterByArch\":true,\"appName\":\"Pebble (tasker fork)\",\"appAuthor\":\"OWNER\",\"shizukuPretendToBeGooglePlay\":false,\"allowInsecure\":false,\"exemptFromBackgroundUpdates\":false,\"skipUpdateNotifications\":false,\"about\":\"Core Devices Pebble app, rebased with the tasker-bridge patch set and rebuilt daily from upstream master (HLDD-004).\"}",
+  "overrideSource": "GitHub"
+}

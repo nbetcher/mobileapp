@@ -15,6 +15,7 @@ import co.touchlab.kermit.Logger
 import kotlin.coroutines.cancellation.CancellationException
 import io.rebble.libpebblecommon.NotificationConfig
 import io.rebble.libpebblecommon.NotificationConfigFlow
+import io.rebble.libpebblecommon.automation.AutomationNotificationHooks
 import io.rebble.libpebblecommon.connection.endpointmanager.blobdb.TimeProvider
 import io.rebble.libpebblecommon.database.asMillisecond
 import io.rebble.libpebblecommon.database.dao.NotificationAppRealDao
@@ -304,6 +305,12 @@ class NotificationHandler(
 
     private fun sendNotification(notification: LibPebbleNotification) {
         inflightNotifications[notification.key] = notification
+        // BRIDGE-TAP: notif-send
+        // Automation hook (ADR-008): mirror forwarded notifications to an external integration if one
+        // is attached. Guarded so a hook can never affect watch delivery.
+        runCatching {
+            AutomationNotificationHooks.onSent?.invoke(notification.packageName, notification.title, notification.body)
+        }
         notificationSendQueue.trySend(notification).also {
             if (it.isFailure) {
                 logger.w { "Couldn't write notification to send queue" }

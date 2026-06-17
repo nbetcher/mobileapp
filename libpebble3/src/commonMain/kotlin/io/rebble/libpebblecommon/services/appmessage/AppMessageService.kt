@@ -40,7 +40,13 @@ class AppMessageService(
         protocolHandler.inboundMessages.onEach {
             when (it) {
                 is AppMessage.AppMessagePush -> {
-                    getReceivedMessagesChannel(it.uuid.get()).trySend(it.appMessageData())
+                    val appMessageData = it.appMessageData()
+                    getReceivedMessagesChannel(it.uuid.get()).trySend(appMessageData)
+                    // BRIDGE-TAP: appmsg-received
+                    runCatching {
+                        io.rebble.libpebblecommon.automation.AutomationAppMessageHook.onReceived
+                            ?.invoke(appMessageData.uuid.toString(), appMessageData.data)
+                    }
                 }
             }
         }.launchIn(scope)
