@@ -137,11 +137,13 @@
                 <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />
             </intent-filter>
         </activity-alias>
-        <!-- Automation (Tasker bridge) client-consent review screen. Internal; launched by the
-             bridge's consent notification (ACTION_REVIEW), same-app. -->
+        <!-- Automation (Tasker bridge) consent + settings screen. Launched by the bridge's consent
+             notification (REVIEW_CLIENTS), and exported so the independently-signed plugin can
+             deep-link the user straight here. Exporting is safe: the screen only lets the USER
+             approve/deny/toggle — it carries no privileged side effects. -->
         <activity
             android:name="coredevices.coreapp.automation.ConsentActivity"
-            android:exported="false"
+            android:exported="true"
             android:label="Automation access"
             android:theme="@android:style/Theme.Material.NoActionBar">
             <intent-filter>
