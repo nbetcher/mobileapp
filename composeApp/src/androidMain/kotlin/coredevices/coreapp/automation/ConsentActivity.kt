@@ -30,29 +30,45 @@ import coredevices.coreapp.automation.trust.ConsentController
 import org.koin.android.ext.android.inject
 
 /**
- * Host-app review screen for automation client consent (HLDD-001 §6, §10). Bound to the bridge's
- * [ConsentController] (injected). Launched by the bridge's consent notification (ACTION_REVIEW).
+ * Host-app "Tasker integration" consent screen (HLDD-001 §6, §10, PLAN §5.4). Bound to the bridge's
+ * [ConsentController] (clients + master switch) and [AutomationSettings] (event categories +
+ * notification content), both injected. Launched by the bridge's consent notification (ACTION_REVIEW)
+ * and reachable as the integration's settings screen.
  *
- * Basic Phase-1 UI: master toggle, approve/deny pending, revoke approved. Approve grants a default
- * non-sensitive category set; granular per-category grants and the notification-content/health
- * opt-ins are a later refinement.
+ * Surfaces: the master toggle, the shared event-category toggles, the notification-content +
+ * redaction opt-ins (content default OFF), and approve/deny/revoke of automation clients.
  */
 class ConsentActivity : ComponentActivity() {
     private val consent: ConsentController by inject()
+    private val settings: AutomationSettings by inject()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { ConsentScreen(consent) }
+        setContent { ConsentScreen(consent, settings) }
     }
 }
 
 private val DEFAULT_GRANT = setOf("connectivity", "apps", "media")
 
+private fun categoryLabel(id: String): String = when (id) {
+    AutomationSettings.CATEGORY_CONNECTIVITY -> "Connectivity (connect, battery)"
+    AutomationSettings.CATEGORY_NOTIFICATIONS -> "Notifications"
+    AutomationSettings.CATEGORY_APPS -> "Apps & watchfaces"
+    AutomationSettings.CATEGORY_MEDIA -> "Media controls"
+    AutomationSettings.CATEGORY_CALLS -> "Calls"
+    AutomationSettings.CATEGORY_HEALTH -> "Health"
+    AutomationSettings.CATEGORY_SYSTEM -> "System & errors"
+    else -> id
+}
+
 @Composable
-private fun ConsentScreen(consent: ConsentController) {
+private fun ConsentScreen(consent: ConsentController, settings: AutomationSettings) {
     val master by consent.masterEnabled.collectAsState()
     val pending by consent.pending.collectAsState()
     val approved by consent.clients.collectAsState()
+    val categories by settings.categories.collectAsState()
+    val contentOn by settings.notificationContentEnabled.collectAsState()
+    val redact by settings.redactNotificationContent.collectAsState()
 
     MaterialTheme {
         Surface(Modifier.fillMaxSize()) {
@@ -64,6 +80,50 @@ private fun ConsentScreen(consent: ConsentController) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Enable automation bridge", Modifier.weight(1f))
                     Switch(checked = master, onCheckedChange = { consent.setMasterEnabled(it) })
+                }
+                Spacer(Modifier.height(16.dp))
+
+                // --- Shared event categories (PLAN §5.4). Disabled categories never leave the app. --
+                Text("Shared event categories", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Only the categories you enable are sent to automation clients.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                AutomationSettings.CATEGORIES.forEach { cat ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(categoryLabel(cat), Modifier.weight(1f))
+                        Switch(
+                            checked = categories[cat] ?: true,
+                            enabled = master,
+                            onCheckedChange = { settings.setCategoryEnabled(cat, it) },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+
+                // --- Notification content (default OFF; contents leave this app when enabled). ------
+                Text("Notification content", style = MaterialTheme.typography.titleMedium)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Share notification text", Modifier.weight(1f))
+                    Switch(
+                        checked = contentOn,
+                        enabled = master,
+                        onCheckedChange = { settings.setNotificationContentEnabled(it) },
+                    )
+                }
+                if (contentOn) {
+                    Text(
+                        "Notification title and body will leave this app and reach the automation client.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Redact body (send title + package only)", Modifier.weight(1f))
+                        Switch(
+                            checked = redact,
+                            enabled = master,
+                            onCheckedChange = { settings.setRedactNotificationContent(it) },
+                        )
+                    }
                 }
                 Spacer(Modifier.height(16.dp))
 

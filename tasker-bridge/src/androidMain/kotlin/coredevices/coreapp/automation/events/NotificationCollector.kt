@@ -1,38 +1,32 @@
 package coredevices.coreapp.automation.events
 
+import coredevices.coreapp.automation.AutomationSettings
 import io.rebble.libpebblecommon.automation.AutomationNotificationHooks
 import kotlinx.coroutines.CoroutineScope
-import kotlin.concurrent.Volatile
 
 /**
  * Bridges the libpebble3 notification hooks (the ⚠ patch taps, HOOKS.md §2.2) into bridge events:
  *   - onSent   -> notif.sent
  *   - onAction -> notif.action
  *
- * Consent + redaction (PLAN §5.4 / Phase 4): notification CONTENT defaults OFF ([contentEnabled]).
- * When content is enabled, [redactContent] still strips the body so only package + title leave the
- * app. These flags are the binding point for the in-app per-category consent UI (ConsentController);
- * until bound they stay at the privacy-preserving defaults (package only).
+ * Consent + redaction (PLAN §5.4): notification content is gated by [AutomationSettings] — title and
+ * body are emitted only when content sharing is enabled, and the body is dropped when redaction is
+ * on. The flags are read from thread-safe StateFlows at emit time, so a consent change in the
+ * settings UI takes effect immediately. (Whether the notifications category fires at all is enforced
+ * centrally by EventDispatcher's consent gate.)
  */
 class NotificationCollector(
     private val dispatcher: EventDispatcher,
+    private val settings: AutomationSettings,
 ) {
-    /** When false, only the source package is emitted (no title/body). Default OFF (PLAN §5.4). */
-    @Volatile
-    var contentEnabled: Boolean = false
-
-    /** When true, the body is dropped even if content is enabled (title + package only). */
-    @Volatile
-    var redactContent: Boolean = true
-
     @Suppress("UNUSED_PARAMETER")
     fun start(scope: CoroutineScope) {
-        AutomationNotificationHooks.onSent = onSent@{ pkg, title, body ->
+        AutomationNotificationHooks.onSent = { pkg, title, body ->
             val data = buildMap {
                 put("package", pkg)
-                if (contentEnabled) {
+                if (settings.notificationContentEnabled.value) {
                     title?.let { put("title", it) }
-                    if (!redactContent) body?.let { put("body", it) }
+                    if (!settings.redactNotificationContent.value) body?.let { put("body", it) }
                 }
             }
             dispatcher.emit(category = "notifications", type = "notif.sent", data = data)

@@ -8,6 +8,7 @@ import coredevices.coreapp.automation.events.AppMessageCollector
 import coredevices.coreapp.automation.events.NotificationCollector
 import coredevices.coreapp.automation.events.PerWatchCollector
 import coredevices.coreapp.automation.events.SystemEventCollector
+import coredevices.coreapp.automation.trust.ClientTrustStore
 import io.rebble.libpebblecommon.automation.AutomationAppMessageHook
 import io.rebble.libpebblecommon.automation.AutomationNotificationHooks
 import io.rebble.libpebblecommon.connection.LibPebble
@@ -26,6 +27,8 @@ class AutomationBridge(
     private val libPebble: LibPebble,
     private val dispatcher: EventDispatcher,
     private val listenerHub: ListenerHub,
+    private val trustStore: ClientTrustStore,
+    private val settings: AutomationSettings,
 ) {
     private val logger = Logger.withTag("AutomationBridge")
 
@@ -37,7 +40,7 @@ class AutomationBridge(
     private val connectivity = ConnectivityCollector(libPebble, dispatcher)
     private val perWatch = PerWatchCollector(libPebble, dispatcher)
     private val system = SystemEventCollector(libPebble, dispatcher)
-    private val notifications = NotificationCollector(dispatcher)
+    private val notifications = NotificationCollector(dispatcher, settings)
     private val appMessages = AppMessageCollector(dispatcher)
     private var started = false
 
@@ -46,6 +49,12 @@ class AutomationBridge(
         if (started) return
         started = true
         logger.i { "init bootId=${dispatcher.bootId}" }
+        // Consent gate (PLAN §5.4): drop any event whose category is disabled, or everything when
+        // the master switch is off. Enforced centrally in the dispatcher so every collector AND the
+        // getEventsSince recovery path respect it uniformly.
+        dispatcher.categoryGate = { category ->
+            trustStore.masterEnabled.value && settings.isCategoryEnabled(category)
+        }
         connectivity.start(scope)
         perWatch.start(scope)
         system.start(scope)

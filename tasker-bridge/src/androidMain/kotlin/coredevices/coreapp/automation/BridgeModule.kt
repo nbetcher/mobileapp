@@ -26,6 +26,7 @@ val taskerModule = module {
     single { EventDispatcher(bootId = Uuid.random().toString()) }
     single { ListenerHub(get()) }
     single { ClientTrustStore(get<Context>()) }
+    single { AutomationSettings(get<Context>()) }
     single<PackageInspector> { AndroidPackageInspector(get<Context>().packageManager) }
     single { CallerVerifier(get(), get<ClientTrustStore>()) }
     single { ConsentController(get<Context>(), get()) }

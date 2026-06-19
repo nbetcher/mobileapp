@@ -25,6 +25,14 @@ class EventDispatcher(
     var latestSeq: Long = 0
         private set
 
+    /**
+     * Optional consent gate (PLAN §5.4). When set and it returns false for an event's category, the
+     * event is dropped entirely — no sequence number, no ring-buffer entry — so a disabled category
+     * never reaches any client (even via getEventsSince recovery). Set once by the bridge at startup.
+     */
+    @Volatile
+    var categoryGate: ((String) -> Boolean)? = null
+
     private val _events = MutableSharedFlow<EventEnvelope>(extraBufferCapacity = OVERFLOW)
     val events: SharedFlow<EventEnvelope> = _events.asSharedFlow()
 
@@ -34,6 +42,7 @@ class EventDispatcher(
         watch: WatchRef? = null,
         data: Map<String, String> = emptyMap(),
     ) {
+        if (categoryGate?.invoke(category) == false) return
         val envelope: EventEnvelope
         synchronized(lock) {
             envelope = EventEnvelope(
