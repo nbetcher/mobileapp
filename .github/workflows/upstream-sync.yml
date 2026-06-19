@@ -207,9 +207,14 @@ jobs:
           # Decode the shared keystore to the path the gradle signingConfig reads.
           printf '%s' "$APP_KEYSTORE_B64" | base64 -d > keystore.jks
           chmod 600 keystore.jks
+          # Exclude the Crashlytics mapping upload: the pipeline provisions the DUMMY
+          # google-services.json (no real Firebase project), so uploadCrashlyticsMappingFileRelease
+          # 400s and would fail the build. R8 + the signed APK are unaffected (the mapping .txt is
+          # still generated locally); deobfuscation upload isn't meaningful without a real project.
           ./gradlew --no-daemon \
             :composeApp:assembleRelease \
-            :tasker-bridge:testDebugUnitTest
+            :tasker-bridge:testDebugUnitTest \
+            -x uploadCrashlyticsMappingFileRelease
 
       - name: Upload build reports on failure
         if: failure() && steps.build.outcome == 'failure'
