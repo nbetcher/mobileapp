@@ -14,11 +14,11 @@
 # `pipeline` issue (§7) and stops, leaving the last-built SHA un-advanced so the
 # next tick retries until a human resolves it.
 #
-# Third-party actions are PINNED BY COMMIT SHA (§9). Each external action below
-# uses a clearly-marked `@<pin-sha>` placeholder + TODO — replace each with the
-# real 40-hex commit SHA for the noted version tag before enabling the pipeline.
-# First-party actions (actions/*) are pinned to major-version tags per the
-# repo's existing convention (see .github/workflows/build.yml).
+# Third-party actions are PINNED BY COMMIT SHA (§9): android-actions/setup-android
+# and reactivecircus/android-emulator-runner each carry a `@<40-hex-sha>  # vX.Y.Z`
+# pin — the trailing comment records the human-readable version the SHA resolved
+# from. First-party actions (actions/*) stay on major-version tags per the repo's
+# existing convention (see .github/workflows/build.yml).
 # =============================================================================
 name: upstream-sync
 
@@ -128,8 +128,7 @@ jobs:
           java-version: "17"
 
       - name: Set up Android SDK (build-tools apksigner/zipalign)
-        # TODO(pin §9): pin @v3 to its commit SHA before going live.
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407  # v3.2.2
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -273,8 +272,7 @@ jobs:
 
       - name: Emulator boot smoke
         id: smoke
-        # TODO(pin §9): pin @v2 to its commit SHA before going live.
-        uses: reactivecircus/android-emulator-runner@v2
+        uses: reactivecircus/android-emulator-runner@70f4dee990796918b78d040e3278474bdbd348a7  # v2.37.0
         with:
           api-level: 35                 # tracks targetSdk (libs.versions.toml)
           target: google_apis
