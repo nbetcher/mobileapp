@@ -146,7 +146,27 @@ class BridgeService : Service(), KoinComponent {
         BridgeJson.json.encodeToString(ResultEnvelope.error(code, message))
 
     companion object {
-        private val CAPABILITIES = listOf("events.core")
+        // Capability set advertised at handshake (HLDD-002 §4.2). Coarse feature flags the plugin
+        // gates whole UI tiers on (BridgeSession.CAP_*); the per-client grant + command tier still
+        // authorize each individual call on top of these. Append-only contract — every entry below is
+        // backed by a shipped feature:
+        //   events.core          connectivity / apps / media / calls / dev / system / timeline / watch.state
+        //   events.notifications NotificationCollector (notif.sent, notif.action)
+        //   events.health        SystemEventCollector (health.updated)
+        //   commands.core        all NORMAL-tier CommandCatalog entries (handled in LibPebbleCommandHandler)
+        //   commands.sensitive   all SENSITIVE-tier entries (setPref, setQuickLaunch, connect, disconnect)
+        //   commands.dangerous   dev.toggleConnection (also gated by the app's dangerous-commands toggle)
+        //   appmessages          appmessage.send command + appmsg.received event
+        // Deliberately NOT advertised: screenshot, state.extended — no shipped backing yet.
+        private val CAPABILITIES = listOf(
+            "events.core",
+            "events.notifications",
+            "events.health",
+            "commands.core",
+            "commands.sensitive",
+            "commands.dangerous",
+            "appmessages",
+        )
         private val tokens = ConcurrentHashMap<String, String>() // clientToken -> package
         private val tokenCounter = AtomicLong(0)
     }
