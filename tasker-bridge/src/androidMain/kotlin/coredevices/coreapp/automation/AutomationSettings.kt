@@ -64,12 +64,14 @@ class AutomationSettings(context: Context) {
         const val CATEGORY_CALLS = "calls"
         const val CATEGORY_HEALTH = "health"
         const val CATEGORY_SYSTEM = "system"
+        const val CATEGORY_TIMELINE = "timeline"
 
         /** The user-toggleable event categories (mirrors EventEnvelope.category values). */
         val CATEGORIES = listOf(
             CATEGORY_CONNECTIVITY,
             CATEGORY_NOTIFICATIONS,
             CATEGORY_APPS,
+            CATEGORY_TIMELINE,
             CATEGORY_MEDIA,
             CATEGORY_CALLS,
             CATEGORY_HEALTH,

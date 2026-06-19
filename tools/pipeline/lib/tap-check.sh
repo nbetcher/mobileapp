@@ -45,10 +45,12 @@ fi
 #   notif-send     : a forwarded notification is mirrored to the integration.
 #   notif-action   : a watch-initiated notification action is reported.
 #   appmsg-received: an inbound watchapp AppMessage is reported (the AutoPebble channel).
+#   timeline-action: a watch-initiated timeline pin action is reported.
 TAPS="
 notif-send|// BRIDGE-TAP: notif-send|AutomationNotificationHooks.onSent
 notif-action|// BRIDGE-TAP: notif-action|AutomationNotificationHooks.onAction
 appmsg-received|// BRIDGE-TAP: appmsg-received|AutomationAppMessageHook.onReceived
+timeline-action|// BRIDGE-TAP: timeline-action|AutomationTimelineHook.onAction
 "
 
 # Marker file the subshell appends drift detail to (the `while` loop below runs

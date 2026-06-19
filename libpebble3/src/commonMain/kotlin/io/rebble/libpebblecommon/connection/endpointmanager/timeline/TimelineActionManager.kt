@@ -49,6 +49,14 @@ class TimelineActionManager(
         pin: TimelinePin,
         invocation: TimelineService.TimelineActionInvocation,
     ): TimelineActionResult {
+        // BRIDGE-TAP: timeline-action
+        // A user-invoked pin action (calendar RSVP, custom pin action, remove). Notification actions
+        // flow through handleNotificationAction / override handlers, which report notif.action; this
+        // is the only choke point for the pin/timeline-item actions that channel does not cover.
+        runCatching {
+            io.rebble.libpebblecommon.automation.AutomationTimelineHook.onAction
+                ?.invoke(invocation.itemId.toString(), invocation.actionId.toInt())
+        }
         val action = pin.content.actions.firstOrNull { it.actionID == invocation.actionId }
             ?: run {
                 logger.w {

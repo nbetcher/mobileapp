@@ -8,9 +8,11 @@ import coredevices.coreapp.automation.events.AppMessageCollector
 import coredevices.coreapp.automation.events.NotificationCollector
 import coredevices.coreapp.automation.events.PerWatchCollector
 import coredevices.coreapp.automation.events.SystemEventCollector
+import coredevices.coreapp.automation.events.TimelineCollector
 import coredevices.coreapp.automation.trust.ClientTrustStore
 import io.rebble.libpebblecommon.automation.AutomationAppMessageHook
 import io.rebble.libpebblecommon.automation.AutomationNotificationHooks
+import io.rebble.libpebblecommon.automation.AutomationTimelineHook
 import io.rebble.libpebblecommon.connection.LibPebble
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
@@ -42,6 +44,7 @@ class AutomationBridge(
     private val system = SystemEventCollector(libPebble, dispatcher)
     private val notifications = NotificationCollector(dispatcher, settings)
     private val appMessages = AppMessageCollector(dispatcher)
+    private val timeline = TimelineCollector(dispatcher)
     private var started = false
 
     /** Idempotent. Call once from the host Application after Koin starts. */
@@ -60,6 +63,7 @@ class AutomationBridge(
         system.start(scope)
         notifications.start(scope)
         appMessages.start(scope)
+        timeline.start(scope)
         listenerHub.start(scope)
     }
 
@@ -74,6 +78,7 @@ class AutomationBridge(
         AutomationNotificationHooks.onSent = null
         AutomationNotificationHooks.onAction = null
         AutomationAppMessageHook.onReceived = null
+        AutomationTimelineHook.onAction = null
         scope.coroutineContext.cancelChildren()
     }
 }

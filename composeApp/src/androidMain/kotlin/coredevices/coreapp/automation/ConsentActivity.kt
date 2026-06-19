@@ -54,6 +54,7 @@ private fun categoryLabel(id: String): String = when (id) {
     AutomationSettings.CATEGORY_CONNECTIVITY -> "Connectivity (connect, battery)"
     AutomationSettings.CATEGORY_NOTIFICATIONS -> "Notifications"
     AutomationSettings.CATEGORY_APPS -> "Apps & watchfaces"
+    AutomationSettings.CATEGORY_TIMELINE -> "Timeline actions (pins, calendar)"
     AutomationSettings.CATEGORY_MEDIA -> "Media controls"
     AutomationSettings.CATEGORY_CALLS -> "Calls"
     AutomationSettings.CATEGORY_HEALTH -> "Health"
