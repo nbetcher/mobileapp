@@ -23,6 +23,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -50,6 +53,9 @@ class ConsentActivity : ComponentActivity() {
 
 private val DEFAULT_GRANT = setOf("connectivity", "apps", "media")
 
+/** Command tiers the user can grant a client at approval (value -> label). Events are not tier-gated. */
+private val TIERS = listOf("normal" to "Normal", "sensitive" to "Sensitive", "dangerous" to "Dangerous")
+
 private fun categoryLabel(id: String): String = when (id) {
     AutomationSettings.CATEGORY_CONNECTIVITY -> "Connectivity (connect, battery)"
     AutomationSettings.CATEGORY_NOTIFICATIONS -> "Notifications"
@@ -70,6 +76,7 @@ private fun ConsentScreen(consent: ConsentController, settings: AutomationSettin
     val categories by settings.categories.collectAsState()
     val contentOn by settings.notificationContentEnabled.collectAsState()
     val redact by settings.redactNotificationContent.collectAsState()
+    val dangerousOn by consent.dangerousCommandsEnabled.collectAsState()
 
     MaterialTheme {
         Surface(Modifier.fillMaxSize()) {
@@ -128,6 +135,27 @@ private fun ConsentScreen(consent: ConsentController, settings: AutomationSettin
                 }
                 Spacer(Modifier.height(16.dp))
 
+                // --- Commands (PLAN §5.5). Dangerous-tier commands need THIS toggle AND a per-client
+                // dangerous grant; normal/sensitive only need the per-client tier set at approval. -----
+                Text("Commands", style = MaterialTheme.typography.titleMedium)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Allow dangerous commands")
+                        Text(
+                            "Lets dangerous-tier clients run destructive actions (e.g. toggling the " +
+                                "developer connection). Off by default; also requires granting a client the " +
+                                "dangerous tier below.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Switch(
+                        checked = dangerousOn,
+                        enabled = master,
+                        onCheckedChange = { consent.setDangerousCommandsEnabled(it) },
+                    )
+                }
+                Spacer(Modifier.height(16.dp))
+
                 Text("Pending requests", style = MaterialTheme.typography.titleMedium)
                 if (pending.isEmpty()) Text("None")
                 pending.forEach { p ->
@@ -137,9 +165,23 @@ private fun ConsentScreen(consent: ConsentController, settings: AutomationSettin
                             Text("cert ${p.certSha256Hex.take(16)}…", style = MaterialTheme.typography.bodySmall)
                             Text("source: ${p.installSource ?: "unknown"}", style = MaterialTheme.typography.bodySmall)
                             Spacer(Modifier.height(8.dp))
+                            // Command tier this client may invoke (events are NOT tier-gated). Higher
+                            // tiers are opt-in; dangerous also needs the app toggle above.
+                            var tier by remember(p.packageName) { mutableStateOf("normal") }
+                            Text("Command tier", style = MaterialTheme.typography.bodySmall)
+                            Row {
+                                TIERS.forEach { (value, label) ->
+                                    if (tier == value) {
+                                        Button(onClick = { tier = value }, modifier = Modifier.padding(end = 4.dp)) { Text(label) }
+                                    } else {
+                                        OutlinedButton(onClick = { tier = value }, modifier = Modifier.padding(end = 4.dp)) { Text(label) }
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(8.dp))
                             Row {
                                 Button(onClick = {
-                                    consent.approve(p.packageName, p.packageName, p.certSha256Hex, DEFAULT_GRANT, "normal")
+                                    consent.approve(p.packageName, p.packageName, p.certSha256Hex, DEFAULT_GRANT, tier)
                                 }) { Text("Approve") }
                                 Spacer(Modifier.width(8.dp))
                                 OutlinedButton(onClick = { consent.deny(p.packageName) }) { Text("Deny") }
