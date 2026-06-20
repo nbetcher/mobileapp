@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.DoNotDisturb
+import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Mic
@@ -220,6 +221,7 @@ enum class Section(val title: String, val icon: ImageVector) {
     Timeline("Timeline", Icons.Default.Timeline), // watch only
     QuietTime("Quiet Time", Icons.Default.DoNotDisturb),
     Connectivity("Connectivity", Icons.Default.Wifi),
+    Automation("Automation", Icons.Default.Extension),
     Music("Music", Icons.Default.MusicNote), // watch only
     Other("Other", Icons.Default.MoreHoriz), // watch only
     Diagnostics("Diagnostics", Icons.Default.Timeline),
@@ -1787,6 +1789,16 @@ fun rememberSettingsItemsState(navBarNav: NavBarNav?, snackbarDisplay: SnackbarD
                         coreConfigHolder.update(coreConfig.copy(interceptPKJSWeather = it))
                     },
                 ),
+                basicSettingsActionItem(
+                    title = "Tasker plugin bridge",
+                    description = "Approve apps and choose what Pebble shares with automation tools like Tasker",
+                    topLevelType = TopLevelType.Phone,
+                    section = Section.Automation,
+                    show = { platform == Platform.Android },
+                    action = {
+                        openAutomationSettings(uiContext)
+                    },
+                ),
             ) + watchPrefs
         }
 
@@ -2676,6 +2688,9 @@ private fun SpokenLanguageRow(
 expect fun makeTokenClipEntry(token: String): ClipEntry
 
 expect fun openGoogleFitApp(uiContext: PlatformUiContext?)
+
+/** Open the host app's "Automation access" screen (ConsentActivity). Android only; no-op elsewhere. */
+expect fun openAutomationSettings(uiContext: PlatformUiContext?)
 
 object SettingsKeys {
     const val KEY_ENABLE_MEMFAULT_UPLOADS = "enable_memfault_uploads"

@@ -18,6 +18,10 @@ actual fun openGoogleFitApp(uiContext: PlatformUiContext?) {
     // Not applicable on iOS - the menu item is only shown on Android
 }
 
+actual fun openAutomationSettings(uiContext: PlatformUiContext?) {
+    // Not applicable on iOS - the Tasker bridge / automation settings are Android-only.
+}
+
 actual fun getPlatformSTTLanguages(): List<Pair<String, String>> {
     @Suppress("UNCHECKED_CAST")
     val locales = SFSpeechRecognizer.supportedLocales() as Set<NSLocale>

@@ -31,3 +31,12 @@ actual fun openGoogleFitApp(uiContext: PlatformUiContext?) {
         )
     }
 }
+
+actual fun openAutomationSettings(uiContext: PlatformUiContext?) {
+    val activity = uiContext?.activity ?: return
+    // ConsentActivity lives in the app module (composeApp); launch it by component name so this
+    // lower-level module needs no compile dependency on it.
+    activity.startActivity(
+        Intent().setClassName(activity, "coredevices.coreapp.automation.ConsentActivity"),
+    )
+}
