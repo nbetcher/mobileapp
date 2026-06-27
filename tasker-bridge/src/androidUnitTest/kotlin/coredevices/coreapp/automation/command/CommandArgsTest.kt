@@ -45,4 +45,16 @@ class CommandArgsTest {
         assertNull(CommandArgs.vibePattern(null))
         assertNull(CommandArgs.vibePattern(""))
     }
+
+    @Test
+    fun vibePattern_parsesCustomCsv_clampsAndDropsJunk() {
+        // Plain on/off/on CSV.
+        assertEquals(listOf(200u, 100u, 200u), CommandArgs.vibePattern("200,100,200"))
+        // Space/semicolon separators and surrounding whitespace are tolerated.
+        assertEquals(listOf(300u, 150u), CommandArgs.vibePattern(" 300 ; 150 "))
+        // Zero and non-numeric entries are dropped; values clamp into 10..10000.
+        assertEquals(listOf(10u, 10000u), CommandArgs.vibePattern("5,abc,0,99999"))
+        // No usable numbers -> null (watch default).
+        assertNull(CommandArgs.vibePattern("abc,xyz"))
+    }
 }

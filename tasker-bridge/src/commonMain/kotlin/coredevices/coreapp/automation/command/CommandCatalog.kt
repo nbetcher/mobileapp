@@ -49,6 +49,9 @@ object CommandCatalog {
     const val WATCH_SET_QUICK_LAUNCH = "watch.setQuickLaunch"
     const val DEV_TOGGLE_CONNECTION = "dev.toggleConnection"
 
+    /** Read-only: list the installed locker apps/faces (UUID + title) so clients can offer a picker. */
+    const val SYSTEM_GET_LOCKER = "system.getLocker"
+
     /** type -> minimum required tier. The set of keys IS the allowlist. */
     val tiers: Map<String, CommandTier> = mapOf(
         WATCH_GET_INFO to CommandTier.NORMAL,
@@ -57,6 +60,7 @@ object CommandCatalog {
         WATCH_SET_WATCHFACE to CommandTier.NORMAL,
         APPMESSAGE_SEND to CommandTier.NORMAL,
         SYSTEM_PING to CommandTier.NORMAL,
+        SYSTEM_GET_LOCKER to CommandTier.NORMAL,
         WATCH_SET_PREF to CommandTier.SENSITIVE,
         WATCH_SET_QUICK_LAUNCH to CommandTier.SENSITIVE,
         WATCH_CONNECT to CommandTier.SENSITIVE,

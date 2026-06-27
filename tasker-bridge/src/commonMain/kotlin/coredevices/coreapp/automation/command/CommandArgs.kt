@@ -33,13 +33,25 @@ internal object CommandArgs {
     }
 
     /**
-     * Maps the notification "vibe" hint to a vibration pattern (ms on/off), or null for the watch's
-     * default (covers "none" and blank).
+     * Maps the notification "vibe" to a vibration pattern (ms on/off), or null for the watch's default
+     * (covers "none" and blank).
+     *
+     * Accepts the named hints ("short"/"long"/"double") AND a custom CSV of on/off durations in ms
+     * ("on,off,on,..." starting with an on/buzz), e.g. "200,100,200". Separators may be comma, space, or
+     * semicolon; non-numeric/zero entries are dropped and each value is clamped to a sane 10–10000 ms.
      */
-    fun vibePattern(vibe: String?): List<UInt>? = when (vibe?.trim()?.lowercase()) {
-        "short" -> listOf(180u)
-        "long" -> listOf(600u)
-        "double" -> listOf(160u, 120u, 160u)
-        else -> null
+    fun vibePattern(vibe: String?): List<UInt>? {
+        val v = vibe?.trim() ?: return null
+        when (v.lowercase()) {
+            "short" -> return listOf(180u)
+            "long" -> return listOf(600u)
+            "double" -> return listOf(160u, 120u, 160u)
+            "none", "" -> return null
+        }
+        val nums = v.split(',', ' ', ';', '\t')
+            .mapNotNull { it.trim().takeIf(String::isNotEmpty)?.toLongOrNull() }
+            .filter { it > 0 }
+            .map { it.coerceIn(10L, 10_000L).toUInt() }
+        return nums.ifEmpty { null }
     }
 }

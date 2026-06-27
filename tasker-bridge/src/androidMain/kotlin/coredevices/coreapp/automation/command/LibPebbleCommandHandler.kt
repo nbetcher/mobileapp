@@ -18,12 +18,15 @@ import io.rebble.libpebblecommon.database.entity.QuicklaunchWatchPref
 import io.rebble.libpebblecommon.database.entity.WatchPref
 import io.rebble.libpebblecommon.database.entity.WatchPrefType
 import io.rebble.libpebblecommon.database.entity.buildTimelineNotification
+import io.rebble.libpebblecommon.locker.AppType
 import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
 import io.rebble.libpebblecommon.packets.blobdb.TimelineItem
 import io.rebble.libpebblecommon.services.appmessage.AppMessageData
 import io.rebble.libpebblecommon.services.appmessage.AppMessageResult
 import io.rebble.libpebblecommon.services.blobdb.TimelineActionResult
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlin.time.Clock
 import kotlin.uuid.Uuid
@@ -58,8 +61,29 @@ class LibPebbleCommandHandler(
         CommandCatalog.NOTIFICATION_SEND -> sendNotification(command)
         CommandCatalog.WATCH_SET_PREF -> setPref(command)
         CommandCatalog.WATCH_SET_QUICK_LAUNCH -> setQuickLaunch(command)
+        CommandCatalog.SYSTEM_GET_LOCKER -> getLocker(command)
 
         else -> CommandResult.Failure(ErrorCode.UNSUPPORTED_COMMAND, "unknown command '${command.type}'")
+    }
+
+    // --- system.getLocker (read-only locker list for client-side pickers) ---
+    @Serializable
+    private data class LockerEntryDto(val uuid: String, val title: String, val type: String)
+
+    private suspend fun getLocker(command: CommandEnvelope): CommandResult {
+        val types = when (command.args["type"]?.lowercase()) {
+            "watchface" -> listOf(AppType.Watchface)
+            "watchapp" -> listOf(AppType.Watchapp)
+            else -> listOf(AppType.Watchapp, AppType.Watchface)
+        }
+        val entries = buildList {
+            for (t in types) {
+                libPebble.getLocker(t, null, 1000).first().forEach { w ->
+                    add(LockerEntryDto(w.properties.id.toString(), w.properties.title, w.properties.type.code))
+                }
+            }
+        }
+        return CommandResult.Ok(mapOf("entries" to json.encodeToString(entries)))
     }
 
     // --- watch.getInfo ---
