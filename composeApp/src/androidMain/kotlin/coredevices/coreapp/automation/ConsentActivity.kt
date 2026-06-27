@@ -16,7 +16,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -213,8 +212,11 @@ private fun ConsentScreen(consent: ConsentController, settings: AutomationSettin
                             }
                         }
                         Spacer(Modifier.height(12.dp))
+                        // Approve / Deny carry EQUAL visual weight (both outlined) on purpose: this is a
+                        // security decision, so neither is a filled "default" that could nudge the user or
+                        // read as "already approved" (mirrors the platform runtime-permission dialog).
                         Row {
-                            Button(onClick = {
+                            OutlinedButton(onClick = {
                                 consent.approve(p.packageName, p.packageName, p.certSha256Hex, DEFAULT_GRANT, tier)
                             }) { Text("Approve") }
                             Spacer(Modifier.width(8.dp))
