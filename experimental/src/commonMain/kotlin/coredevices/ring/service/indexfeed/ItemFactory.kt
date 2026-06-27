@@ -32,7 +32,7 @@ class ItemFactory {
         toolCallId: String?,
     ): ItemDocument? = when (result) {
         is SemanticResult.TaskCreation ->
-            reminderItem(sourceRecordingId, createdAt, result.title, result.deadline, toolCallId)
+            reminderItem(sourceRecordingId, createdAt, result.title, result.deadline, toolCallId, result.localReminderId)
         is SemanticResult.ListItemCreation ->
             noteItem(sourceRecordingId, createdAt, result.content, result.listUsed, toolCallId, result.resolvedListId)
         is SemanticResult.AlarmCreation ->
@@ -43,19 +43,23 @@ class ItemFactory {
             messageItem(sourceRecordingId, createdAt, result.recipientName, result.text, result.contactId, ItemMetadata.Message.Status.Sent, toolCallId)
         is SemanticResult.ActionLogged ->
             actionLogItem(sourceRecordingId, createdAt, result.title, result.toolName, result.success, toolCallId, result.body)
+        is SemanticResult.SupportingData if !result.assistiveOnly ->
+            answerItem(sourceRecordingId, createdAt, result.question ?: "", result.summary ?: "", toolCallId)
         is SemanticResult.SupportingData,
-        SemanticResult.GenericSuccess,
+        is SemanticResult.Response,
+        is SemanticResult.GenericSuccess,
         is SemanticResult.GenericFailure -> null
     }
 
     // --- Per-call item factories used by tool implementations ---
 
     fun reminderItem(
-        sourceRecordingId: String,
+        sourceRecordingId: String?,
         createdAt: Instant,
         title: String,
         dueAt: Instant?,
-        toolCallId: String?
+        toolCallId: String?,
+        localReminderId: Int? = null,
     ): ItemDocument = createItem(
         createdAt = createdAt,
         title = title,
@@ -63,7 +67,7 @@ class ItemFactory {
         parents = listOf(LIST_TODOS_ID),
         recordingId = sourceRecordingId,
         toolCallId = toolCallId,
-        metadata = ItemMetadata.Reminder(repeat = "one_time", notification = "push"),
+        metadata = ItemMetadata.Reminder(repeat = "one_time", notification = "push", localReminderId = localReminderId),
     )
 
     private fun pickNoteList(listUsedHint: String?): String {
@@ -76,7 +80,7 @@ class ItemFactory {
     }
 
     fun noteItem(
-        sourceRecordingId: String,
+        sourceRecordingId: String?,
         createdAt: Instant,
         title: String,
         listHint: String?,
@@ -192,7 +196,7 @@ class ItemFactory {
         createdAt = createdAt,
         title = question.trim().replace(Regex("""\s+"""), " "),
         body = answer,
-        parents = listOf(LIST_NOTES_SELF_ID),
+        parents = emptyList(),
         recordingId = sourceRecordingId,
         toolCallId = toolCallId,
         metadata = ItemMetadata.Answer(question = question.trim()),
@@ -204,7 +208,7 @@ class ItemFactory {
         body: String = "",
         dueAt: Instant? = null,
         parents: List<String>,
-        recordingId: String,
+        recordingId: String?,
         toolCallId: String?,
         metadata: ItemMetadata,
     ): ItemDocument {

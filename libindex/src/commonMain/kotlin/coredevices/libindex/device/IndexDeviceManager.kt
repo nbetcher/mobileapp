@@ -37,6 +37,10 @@ class IndexDeviceManager(
     private val _rings = MutableStateFlow(emptyList<IndexDevice>())
     override val rings: IndexDevices = _rings
 
+    override fun warnIfNoCompanionAssociations() {
+        associations?.warnIfNoCompanionAssociations()
+    }
+
     companion object {
         private val logger = Logger.withTag("IndexDeviceRepository")
     }
@@ -112,6 +116,7 @@ class IndexDeviceManager(
                     }
                 }
             }
+            warnIfNotCompanionAssociated()
         }
         associations?.bondStateChanges?.onEach { evt ->
             if (evt.state == IndexBondState.NotBonded && evt.identifier.asString == prefs.ringPaired.value) {
@@ -174,6 +179,15 @@ class IndexDeviceManager(
                     updateRing(it, isUpdating = null)
                 }
             }.launchIn(scope)
+    }
+
+    // Without any CompanionDeviceManager association the app loses companion background privileges
+    // (e.g. launch activities) so warn the user to re-pair. Associations for other
+    // devices (e.g. a watch) are fine and still grant the privileges.
+    private fun warnIfNotCompanionAssociated() {
+        val associations = associations ?: return
+        val pairedId = prefs.ringPaired.value ?: return
+        associations.warnIfNoCompanionAssociations()
     }
 
     fun markFirmwareUpdatingState(identifier: KMPHaversineSatellite, isUpdating: Boolean) {

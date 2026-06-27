@@ -2,10 +2,12 @@ package coredevices.util.transcription
 
 import co.touchlab.kermit.Logger
 import com.cactus.cactusDestroy
+import com.cactus.cactusGetLastError
 import com.cactus.cactusInit
 import com.cactus.cactusStop
 import com.cactus.cactusTranscribe
 import com.cactus.isCactusSupported
+import coredevices.analytics.CoreAnalytics
 import coredevices.util.AudioEncoding
 import coredevices.util.CommonBuildKonfig
 import coredevices.util.CoreConfigFlow
@@ -16,6 +18,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.filterIsInstance
@@ -59,12 +62,13 @@ class CactusTranscriptionService(
     private val wisprFlow: WisprFlowTranscriptionService,
     private val kirinki: KirinkiTranscriptionService,
     private val modelProvider: CactusModelPathProvider,
+    private val analytics: CoreAnalytics,
     private val inferenceBoost: InferenceBoost = NoOpInferenceBoost()
 ): TranscriptionService {
     companion object {
         private val logger = Logger.withTag("CactusTranscriptionService")
         private val nonSpeechRegex = "\\[[^\\]]*\\]|\\([^)]*\\)".toRegex()
-        private val wisprSkipInterval = 3.minutes
+        private val wisprSkipInterval = 1.minutes
     }
 
     private val transcriptionMutex = Mutex()
@@ -75,10 +79,25 @@ class CactusTranscriptionService(
     private val cacheDir = Path(SystemTemporaryDirectory, "cactus_stt")
 
     /**
-     * Run cactusTranscribe() with cancellation support.
-     * Since the native transcribe call is blocking and can't be interrupted by coroutine
-     * cancellation, we monitor the calling coroutine's Job and call cactusStop() if it
-     * gets cancelled while the native call is in progress.
+     * Calls cactusStop() if the calling coroutine is cancelled while [block] runs.
+     */
+    private suspend fun <T> withCactusStopOnCancel(handle: Long, block: () -> T): T {
+        val callerJob = kotlin.coroutines.coroutineContext[Job]
+        val completionHandle = callerJob?.invokeOnCompletion { cause ->
+            if (cause != null) {
+                logger.d { "Calling cactusStop() due to cancellation: ${cause.message}" }
+                cactusStop(handle)
+            }
+        }
+        return try {
+            block()
+        } finally {
+            completionHandle?.dispose()
+        }
+    }
+
+    /**
+     * Run cactusTranscribe() with cancellation support (see [withCactusStopOnCancel]).
      */
     private suspend fun cancellableTranscribe(handle: Long, audioPath: String): String {
         val freeMemory = try {
@@ -91,17 +110,12 @@ class CactusTranscriptionService(
             logger.e { "Low free memory ($freeMemory MB), skipping local transcription" }
             throw TranscriptionException.NotEnoughMemory(modelUsed = sttConfig.value.modelName)
         }
-        val callerJob = kotlin.coroutines.coroutineContext[Job]
-        val completionHandle = callerJob?.invokeOnCompletion { cause ->
-            if (cause != null) {
-                logger.d { "Calling cactusStop() due to cancellation: ${cause.message}" }
-                cactusStop(handle)
+        return withCactusStopOnCancel(handle) {
+            parseTranscriptionText(cactusTranscribe(handle, audioPath, null, null, null, null)).also { text ->
+                if (text.isBlank()) {
+                    logger.w { "cactusTranscribe returned blank result, native lastError='${cactusGetLastError()}'" }
+                }
             }
-        }
-        return try {
-            parseTranscriptionText(cactusTranscribe(handle, audioPath, null, null, null, null))
-        } finally {
-            completionHandle?.dispose()
         }
     }
 
@@ -118,6 +132,7 @@ class CactusTranscriptionService(
     val isModelReady get() = modelHandle != 0L
     val configuredMode get() = sttConfig.value.mode
     val configuredModel get() = sttConfig.value.modelName
+    val configuredLanguage get() = sttConfig.value.spokenLanguage
     private var _lastSuccessfulMode: CactusSTTMode? = null
     val lastSuccessfulMode get() = _lastSuccessfulMode
     override val onInitialized = Channel<Boolean>(Channel.RENDEZVOUS)
@@ -172,7 +187,9 @@ class CactusTranscriptionService(
             if (handle == 0L) return
             withHighPriorityThread {
                 withTimeout(2.seconds) {
-                    cactusTranscribe(handle, null, null, null, null, silentPcm)
+                    withCactusStopOnCancel(handle) {
+                        cactusTranscribe(handle, null, null, null, null, silentPcm)
+                    }
                 }
             }
         }
@@ -271,21 +288,31 @@ class CactusTranscriptionService(
         // (e.g. pebble firmware) have hard timeouts.
         val initialTimeout = if (willFallbackLocal) 7.seconds else 10.seconds
 
-        suspend fun transcribeKirinki() = kirinki.transcribe(
-            audioStreamFrames = flowOf(audio),
-            sampleRate = sampleRate,
-            language = language,
-            conversationContext = conversationContext,
-            dictionaryContext = dictionaryContext,
-            contentContext = contentContext
-        ).filterIsInstance<TranscriptionSessionStatus.Transcription>().first()
+        suspend fun transcribeKirinki() = try {
+            kirinki.transcribe(
+                audioStreamFrames = flowOf(audio),
+                sampleRate = sampleRate,
+                language = language,
+                conversationContext = conversationContext,
+                dictionaryContext = dictionaryContext,
+                contentContext = contentContext
+            ).filterIsInstance<TranscriptionSessionStatus.Transcription>().first().also {
+                analytics.logTranscriptionSuccess("kirinki")
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            analytics.logTranscriptionFailure("kirinki", transcriptionFailureReason(e), e.message)
+            throw e
+        }
 
         // Kirinki is only used as a backup when there's no local model to fall back on. When a local
         // fallback is available we let the caller handle it by propagating the WisprFlow failure.
         val canUseKirinki = !willFallbackLocal && kirinki.isAvailable()
 
         val skipWispr = lastErrorMutex.withLock {
-            (Clock.System.now() - lastWisprError) < wisprSkipInterval && (willFallbackLocal || canUseKirinki)
+            // Don't skip wispr if local fallback, because cactus might still be running, we can't trust its cancellation right now due to bug
+            ((Clock.System.now() - lastWisprError) < wisprSkipInterval && canUseKirinki) && !willFallbackLocal
         }
         if (skipWispr) {
             if (canUseKirinki) {
@@ -310,9 +337,11 @@ class CactusTranscriptionService(
             lastErrorMutex.withLock {
                 lastWisprError = Instant.DISTANT_PAST
             }
+            analytics.logTranscriptionSuccess("wisprflow")
             res
         } catch (e: Exception) {
             if (e !is TimeoutCancellationException && e is CancellationException) throw e
+            analytics.logTranscriptionFailure("wisprflow", transcriptionFailureReason(e), e.message)
             if (e is TranscriptionException.NoSpeechDetected) throw e // NoSpeechDetected is a valid result, not a failure of the service
             lastErrorMutex.withLock {
                 lastWisprError = Clock.System.now()
@@ -336,20 +365,32 @@ class CactusTranscriptionService(
     }
 
     private suspend fun runLocalTranscribe(path: Path, timeout: Duration? = null): String {
-        val handle = modelHandle
-        if (handle == 0L) {
-            if (!isCactusSupported()) {
-                throw TranscriptionException.TranscriptionServiceUnavailable(modelUsed = sttConfig.value.modelName)
+        try {
+            val handle = modelHandle
+            if (handle == 0L) {
+                if (!isCactusSupported()) {
+                    throw TranscriptionException.TranscriptionServiceUnavailable(modelUsed = sttConfig.value.modelName)
+                }
+                throw TranscriptionException.TranscriptionRequiresDownload("Model not initialized")
             }
-            throw TranscriptionException.TranscriptionRequiresDownload("Model not initialized")
-        }
-        inferenceBoost.acquire()
-        return try {
-            withMaybeTimeout(timeout) {
-                cancellableTranscribe(handle, path.toString())
+            inferenceBoost.acquire()
+            val text = try {
+                withMaybeTimeout(timeout) {
+                    cancellableTranscribe(handle, path.toString())
+                }
+            } finally {
+                inferenceBoost.release()
             }
-        } finally {
-            inferenceBoost.release()
+            analytics.logTranscriptionSuccess("cactus")
+            return text
+        } catch (e: TimeoutCancellationException) {
+            analytics.logTranscriptionFailure("cactus", transcriptionFailureReason(e), e.message)
+            throw e
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            analytics.logTranscriptionFailure("cactus", transcriptionFailureReason(e), e.message)
+            throw e
         }
     }
 
@@ -501,11 +542,21 @@ class CactusTranscriptionService(
                     inferenceBoost.release()
                 }
                 _lastSuccessfulMode = CactusSTTMode.LocalOnly
-                text.takeIf { it.isNotBlank() }
+                val result = text.takeIf { it.isNotBlank() }
                     ?: throw TranscriptionException.NoSpeechDetected(
                         "empty_result",
                         modelUsed = sttConfig.value.modelName,
                     )
+                analytics.logTranscriptionSuccess("cactus")
+                result
+            } catch (e: TimeoutCancellationException) {
+                analytics.logTranscriptionFailure("cactus", transcriptionFailureReason(e), e.message)
+                throw e
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                analytics.logTranscriptionFailure("cactus", transcriptionFailureReason(e), e.message)
+                throw e
             } finally {
                 try {
                     SystemFileSystem.delete(path)

@@ -13,7 +13,16 @@ expect class IndexPlatformBluetoothAssociations {
     val bondStateChanges: Flow<IndexBondStateUpdate>
     val associationsReady: Deferred<Unit>
     fun init(bluetoothPermissionChanged: Flow<Boolean>)
+
+    /**
+     * Warns when there are no CDM associations for Android, since we lose privileges to e.g.
+     * send alarm create intent in the background.
+     */
+    fun warnIfNoCompanionAssociations(): Unit
 }
+
+val IndexPlatformBluetoothAssociations.Companion.REQUEST_URI_HOST: String
+    get() = "register-index-companion"
 
 data class IndexAssociation(
     val deviceName: String,

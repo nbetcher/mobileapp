@@ -12,7 +12,7 @@ import coredevices.indexai.database.dao.ConversationMessageDao
 import coredevices.indexai.database.dao.RecordingEntryDao
 import coredevices.mcp.client.McpIntegration
 import coredevices.ring.agent.AgentFactory
-import coredevices.ring.agent.AgentNenya
+import coredevices.ring.agent.IndexAgentNenya
 import coredevices.ring.agent.SearchAgentNenya
 import coredevices.ring.agent.BuiltinServletRepository
 import coredevices.ring.agent.McpSessionFactory
@@ -76,6 +76,7 @@ import java.io.File
 import kotlin.collections.emptyList
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Instant
 
 // region Fakes
 
@@ -91,6 +92,7 @@ class FakePreferences : Preferences {
     override val debugDetailsEnabled: StateFlow<Boolean> = MutableStateFlow(false)
     override val approvedBeeperContacts: StateFlow<List<ApprovedBeeperContact>> = MutableStateFlow(emptyList())
     override val secondaryMode: StateFlow<SecondaryMode> = MutableStateFlow(SecondaryMode.Disabled)
+    override val secondaryModeMcpGroupId: StateFlow<Long?> = MutableStateFlow(null)
     override val reminderProvider: StateFlow<ReminderProvider> = MutableStateFlow(ReminderProvider.BuiltIn)
     override val noteProvider: StateFlow<NoteProvider> = MutableStateFlow(NoteProvider.Builtin)
     override val noteShortcut: StateFlow<NoteShortcutType> = MutableStateFlow(NoteShortcutType.SendToMe)
@@ -110,6 +112,7 @@ class FakePreferences : Preferences {
     override fun setDebugDetailsEnabled(enabled: Boolean) {}
     override suspend fun setApprovedBeeperContacts(contacts: List<ApprovedBeeperContact>?) {}
     override fun setSecondaryMode(mode: SecondaryMode) {}
+    override fun setSecondaryModeMcpGroupId(groupId: Long?) {}
     override fun setReminderProvider(provider: ReminderProvider) {}
     override fun setNoteProvider(provider: NoteProvider) {}
     override fun setNoteShortcut(shortcut: NoteShortcutType) {}
@@ -231,14 +234,14 @@ class RecordingProcessingQueueTest {
         single { BuiltinServletRepository() }
 
         // Agent (uses FakeNenyaClient via Koin)
-        factory { p -> AgentNenya(get(), p.getOrNull() ?: emptyList()) }
+        factory { p -> IndexAgentNenya(get(), p.getOrNull() ?: emptyList()) }
         factory { p -> SearchAgentNenya(get(), get(), get(), p.getOrNull() ?: emptyList()) }
         singleOf(::AgentFactory)
         singleOf(::McpSessionFactory)
 
         single {
             object : IndexWebhookApi {
-                override fun uploadIfEnabled(samples: ShortArray?, sampleRate: Int, recordingId: String, transcription: String?) {}
+                override fun uploadIfEnabled(samples: ShortArray?, sampleRate: Int, recordingId: String, transcription: String?, recordedAt: Instant) {}
                 override val isEnabled: StateFlow<Boolean> = MutableStateFlow(false)
             }
         } bind IndexWebhookApi::class

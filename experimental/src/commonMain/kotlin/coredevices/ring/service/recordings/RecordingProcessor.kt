@@ -17,10 +17,10 @@ import coredevices.mcp.data.ToolCallResult
 import coredevices.util.transcription.STTLanguage
 import coredevices.ring.agent.AgentNetworkException
 import coredevices.ring.data.entity.room.TraceEventData
+import coredevices.ring.database.room.dao.LocalReminderDao
 import coredevices.ring.database.room.repository.ItemRepository
 import coredevices.ring.database.room.repository.RecordingRepository
 import coredevices.ring.service.indexfeed.ItemFactory
-import coredevices.ring.service.indexfeed.RecordingSessionContext
 import coredevices.ring.util.trace.RingTraceSession
 import coredevices.util.queue.RecoverableTaskException
 import kotlinx.coroutines.CoroutineScope
@@ -57,6 +57,7 @@ class RecordingProcessor(
     private val itemRepo: ItemRepository,
     private val recordingRepo: RecordingRepository,
     private val itemFactory: ItemFactory,
+    private val localReminderDao: LocalReminderDao,
 ) {
     sealed interface RecordingStatus {
         /**
@@ -215,13 +216,12 @@ class RecordingProcessor(
         recordingEntryId: Long?,
         mcpSession: McpSession,
         agent: Agent,
-        forcedTool: (suspend () -> ToolCallResult)? = null,
+        forcedTool: (suspend (assistantMessage: String?) -> ToolCallResult)? = null,
         text: String
     ) {
         val rec = withContext(Dispatchers.IO) { recordingRepo.getRecording(recordingId) }
         val firestoreId = rec?.firestoreId
         val createdAt = rec?.localTimestamp ?: Clock.System.now()
-        val sessionContext = firestoreId?.let { RecordingSessionContext(it, createdAt) }
 
         trace.markEvent("agent_processing_start",
             TraceEventData.AgentProcessingStart(
@@ -240,9 +240,7 @@ class RecordingProcessor(
             recordingEntryId
         )
         try {
-            withContext(if (sessionContext != null) currentCoroutineContext() + sessionContext else currentCoroutineContext()) {
-                agent.send(text, mcpSession)
-            }
+            agent.send(text, mcpSession)
         } catch (e: AgentNetworkException) {
             // Reset conversation to before processing so task retry works correctly
             logger.e(e) { "Error during agent processing" }
@@ -272,10 +270,11 @@ class RecordingProcessor(
             it.semantic_result is SemanticResult.GenericFailure && (it.semantic_result as SemanticResult.GenericFailure).forceFallbackTool
         } ?: false
         if (forcedTool != null && (noToolRan || toolRequestedFallback)) {
+            val lastAssistantMessage = conv.drop(convEndIdx)
+                .lastOrNull { it.role == MessageRole.assistant }
+                ?.content
             // Agent did not take any action, force tool
-            val toolResult = withContext(if (sessionContext != null) currentCoroutineContext() + sessionContext else currentCoroutineContext()) {
-                forcedTool()
-            }
+            val toolResult = forcedTool(lastAssistantMessage)
             logger.w { "Forcing tool call result into conversation" }
             agent.addMessage(
                 ConversationMessageDocument(
@@ -298,8 +297,15 @@ class RecordingProcessor(
                     val item = msg.semantic_result?.let {
                         itemFactory.createFromSemanticResult(it, firestoreId, createdAt, msg.tool_call_id)
                     } ?: return@forEach
-                    runCatching { itemRepo.setItem(itemFactory.simpleUid(), item) }
+                    val itemId = itemFactory.simpleUid()
+                    runCatching { itemRepo.setItem(itemId, item) }
                         .onFailure { logger.e(it) { "Failed to persist item for tool_call ${msg.tool_call_id}" } }
+                    // Link the local reminder back to this recording so its
+                    // notification can find the feed item to deep link to.
+                    (msg.semantic_result as? SemanticResult.TaskCreation)?.localReminderId?.let { localReminderId ->
+                        runCatching { localReminderDao.setRecordingId(localReminderId, firestoreId) }
+                            .onFailure { logger.w(it) { "Failed to link reminder $localReminderId to recording $firestoreId" } }
+                    }
                 }
         }
         updateConversation(recordingId, agent.conversation.first())

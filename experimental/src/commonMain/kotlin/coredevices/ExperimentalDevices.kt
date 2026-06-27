@@ -115,6 +115,10 @@ class ExperimentalDevices(
         }
     }
 
+    fun onBackgroundSync() {
+        ringDelegate.onBackgroundSync()
+    }
+
     fun handleDeepLink(uri: Uri): Boolean {
         return shortcutActionHandler.handleDeepLink(uri)
     }
@@ -206,7 +210,13 @@ class ExperimentalDevices(
         )
     }
 
-    fun debugSummary(): String? {
-        return ringSync.lastRingSummary()
+    fun debugSummary(): String {
+        return buildString {
+            ringSync.lastRingSummary()?.let {
+                append(it)
+                append("\n")
+            }
+            append("Cactus agent enabled: ${preferences.useCactusAgent.value}")
+        }
     }
 }

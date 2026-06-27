@@ -3,6 +3,7 @@ package coredevices.ring.service
 import co.touchlab.kermit.Logger
 import coredevices.analytics.CoreAnalytics
 import coredevices.firestore.UsersDao
+import coredevices.haversine.BluetoothFailureReason
 import coredevices.haversine.DataDecodeException
 import coredevices.haversine.KMPHaversineSatellite
 import coredevices.haversine.KMPHaversineSatelliteManager
@@ -114,6 +115,10 @@ sealed interface RingEvent {
             override val isFailsafe: Boolean
         ) : FirmwareUpdate
     }
+
+    data class BluetoothPeerPairingIssue(
+        override val ringId: String,
+    ) : RingEvent
 }
 
 class RingSync(
@@ -179,6 +184,29 @@ class RingSync(
                 }
                 put("transfer_start_index", transferStartIndex)
                 put("transfer_end_index_inclusive", transferEndIndex)
+            }
+        )
+    }
+
+    private fun logTransferFailedEvent(
+        serialNumber: String?,
+        rssi: Int?,
+        transferStartIndex: Int?,
+        reason: String?,
+        recoverable: Boolean,
+    ) {
+        coreAnalytics.logEvent(
+            "ring.transfer_failed",
+            buildMap {
+                put("ring_serial", serialNumber ?: "<none>")
+                rssi?.let {
+                    put("rssi", rssi)
+                }
+                transferStartIndex?.let {
+                    put("transfer_start_index", it)
+                }
+                put("failure_reason", reason ?: "<unknown>")
+                put("recoverable", recoverable)
             }
         )
     }
@@ -382,6 +410,10 @@ class RingSync(
                                                     }
 
                                                     is TransferStatus.TransferFailed -> {
+                                                        // A range can drop many indices, each emitting TransferFailed.
+                                                        // transferRange is non-null only for the first drop in the range
+                                                        // (we clear it below), so log a single failed event per range.
+                                                        val rangeStart = transferRange?.first
                                                         transferRange = null
                                                         trace.markEvent("transfer_dropped_recoverable",
                                                             TraceEventData.TransferDroppedRecoverable(
@@ -390,6 +422,15 @@ class RingSync(
                                                             )
                                                         )
                                                         logger.e(transferStatus.exception) { "Transfer dropped: ${transferStatus.collectionIndex}" }
+                                                        if (rangeStart != null) {
+                                                            logTransferFailedEvent(
+                                                                serialNumber = satelliteSerial,
+                                                                rssi = transferStatus.satellite.lastAdvertisement?.rssi?.roundToInt(),
+                                                                transferStartIndex = rangeStart,
+                                                                reason = transferStatus.exception?.message,
+                                                                recoverable = true,
+                                                            )
+                                                        }
                                                     }
 
                                                     is TransferStatus.IrrecoverableDataDetected -> {
@@ -434,6 +475,13 @@ class RingSync(
                                                                 transferId = tid,
                                                                 collectionIndex = transferStatus.collection?.startIndex
                                                             )
+                                                        )
+                                                        logTransferFailedEvent(
+                                                            serialNumber = satelliteSerial,
+                                                            rssi = transferStatus.satellite.lastAdvertisement?.rssi?.roundToInt(),
+                                                            transferStartIndex = transferStatus.collection?.startIndex,
+                                                            reason = transferStatus.exception?.message,
+                                                            recoverable = false,
                                                         )
                                                         sendBugReportPrompt()
                                                     }
@@ -561,15 +609,15 @@ class RingSync(
                                                                     }
                                                                 },
                                                         )
-                                                        withContext(Dispatchers.IO) {
-                                                            ringTransferRepository.updateTransferInfo(
-                                                                transfer.id,
-                                                                transferInfo
-                                                            )
-                                                        }
-                                                        logger.d { "Saving transfer..." }
-                                                        id = "ring_${transferStatus.satellite.id}-${transferStatus.collectionIndex}-${Uuid.random()}"
                                                         if (audioDuration >= 1.5) {
+                                                            withContext(Dispatchers.IO) {
+                                                                ringTransferRepository.updateTransferInfo(
+                                                                    transfer.id,
+                                                                    transferInfo
+                                                                )
+                                                            }
+                                                            logger.d { "Saving transfer..." }
+                                                            id = "ring_${transferStatus.satellite.id}-${transferStatus.collectionIndex}-${Uuid.random()}"
                                                             launch {
                                                                 saveSemaphore.withPermit {
                                                                     try {
@@ -721,6 +769,19 @@ class RingSync(
                                         is SatelliteStatus.ProgrammingUserId -> {
                                             logger.i {
                                                 "Satellite ${satelliteStatus.satellite.id} programming user ID"
+                                            }
+                                        }
+
+                                        is SatelliteStatus.BluetoothFailure -> {
+                                            logger.e {
+                                                "Satellite ${satelliteStatus.satellite.id} Bluetooth failure: ${satelliteStatus.reason}"
+                                            }
+                                            if (satelliteStatus.reason == BluetoothFailureReason.PeerRemovedPairingInformation) {
+                                                _ringEvents.emit(
+                                                    RingEvent.BluetoothPeerPairingIssue(
+                                                        ringId = satelliteStatus.satellite.id,
+                                                    )
+                                                )
                                             }
                                         }
                                     }

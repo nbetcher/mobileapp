@@ -3,6 +3,7 @@
 package coredevices.ring.service.indexfeed
 
 import coredevices.indexai.data.entity.ItemDocument.ItemMetadata
+import coredevices.indexai.util.JsonSnake
 import coredevices.mcp.data.SemanticResult
 import coredevices.ring.service.indexfeed.DefaultListsBootstrap.Companion.LIST_NOTES_SELF_ID
 import coredevices.ring.service.indexfeed.DefaultListsBootstrap.Companion.LIST_TODOS_ID
@@ -28,14 +29,33 @@ class ItemFactoryCreateFromSemanticResultTest {
     @Test
     fun taskCreationMapsToReminderWithToolCallId() {
         val due = createdAt + 5.minutes
-        val item = map(SemanticResult.TaskCreation(title = "Call mom", deadline = due))!!
+        val item = map(SemanticResult.TaskCreation(title = "Call mom", deadline = due, localReminderId = 42))!!
 
         assertEquals("Call mom", item.title)
         assertEquals(due, item.dueAt)
         assertEquals(listOf(LIST_TODOS_ID), item.parentListIds)
         assertEquals(recordingId, item.sourceRecordingId)
         assertEquals(toolCallId, item.sourceToolCallId)
-        assertTrue(item.metadata is ItemMetadata.Reminder)
+        val meta = item.metadata
+        assertTrue(meta is ItemMetadata.Reminder)
+        assertEquals(42, meta.localReminderId)
+    }
+
+    @Test
+    fun taskCreationWithoutLocalReminderIdLeavesItNull() {
+        val item = map(SemanticResult.TaskCreation(title = "Call mom", deadline = null))!!
+        val meta = item.metadata
+        assertTrue(meta is ItemMetadata.Reminder)
+        assertNull(meta.localReminderId)
+    }
+
+    @Test
+    fun reminderMetadataFromOlderJsonDecodesWithNullLocalReminderId() {
+        // Records written before localReminderId existed must still decode.
+        val legacy = """{"type":"reminder","repeat":"one_time","notification":"push"}"""
+        val meta = JsonSnake.decodeFromString(ItemMetadata.serializer(), legacy)
+        assertTrue(meta is ItemMetadata.Reminder)
+        assertNull(meta.localReminderId)
     }
 
     @Test
@@ -104,8 +124,23 @@ class ItemFactoryCreateFromSemanticResultTest {
     }
 
     @Test
+    fun nonAssistiveSupportingDataMapsToAnswerItem() {
+        val item = map(
+            SemanticResult.SupportingData("75F and sunny", assistiveOnly = false, question = "weather in NY?")
+        )!!
+        val meta = item.metadata
+        assertTrue(meta is ItemMetadata.Answer)
+        assertEquals("weather in NY?", meta.question)
+        assertEquals("weather in NY?", item.title)
+        assertEquals("75F and sunny", item.body)
+        assertEquals(emptyList(), item.parentListIds)
+        assertEquals(toolCallId, item.sourceToolCallId)
+    }
+
+    @Test
     fun nonItemResultsMapToNull() {
-        assertNull(map(SemanticResult.SupportingData("info")))
+        assertNull(map(SemanticResult.SupportingData("info", assistiveOnly = true)))
+        assertNull(map(SemanticResult.Response("hello there")))
         assertNull(map(SemanticResult.GenericSuccess))
         assertNull(map(SemanticResult.GenericFailure("nope")))
     }
