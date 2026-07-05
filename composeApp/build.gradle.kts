@@ -25,7 +25,50 @@ val properties = Properties().apply {
     }
 }
 val localReleaseBuild = properties["LOCAL_RELEASE_BUILD"]?.toString()?.toBooleanStrictOrNull() ?: false
-versioning.keepOriginalBundleFile = true
+// We name the release/debug APK ourselves (below); don't let nanogiants keep its own copy.
+versioning.keepOriginalBundleFile = false
+
+// Real app version, injected by the resync as the store version at the release cutoff
+// (`-PpebbleVersionName=1.5.0.2`). The nanogiants plugin derives versionName from git tags, but neither
+// our fork nor Core Devices' public repo carries release tags, so `getVersionName()` throws and falls
+// back to "unknown" — which the Rebble cohorts firmware check (Cohorts.kt sends mobileVersion /
+// pebbleAppVersion to cohorts.rebble.io) can't resolve, eventually forcing the watch into recovery.
+// Zero-pad missing octets to 4 (e.g. 1.3.0 -> 1.3.0.0).
+val injectedVersionName: String? = (findProperty("pebbleVersionName") as String?)
+    ?.trim()?.takeIf { it.isNotEmpty() }
+    ?.let { v -> (v.split(".") + listOf("0", "0", "0", "0")).take(4).joinToString(".") }
+
+// The version actually applied (injected store version, else nanogiants' tag value, else "unknown").
+val resolvedVersionName: String =
+    injectedVersionName ?: runCatching { versioning.getVersionName() }.getOrDefault("unknown")
+
+// Commit we resynced up to (the release cutoff), 8-char short — for the APK filename. Injected by the
+// resync as -PpebbleCommitHash; falls back to the current HEAD short sha for ad-hoc local builds.
+val pebbleCommitHash: String = (findProperty("pebbleCommitHash") as String?)?.trim()?.takeIf { it.isNotEmpty() }
+    ?: runCatching {
+        project.providers.exec { commandLine("git", "rev-parse", "--short=8", "HEAD") }
+            .standardOutput.asText.get().trim()
+    }.getOrDefault("nogit")
+
+// Canonical single artifact: Pebble_<version>-<commit>-<buildType>.apk. Runs after packaging (hence
+// after nanogiants), renames whatever APK AGP produced, and deletes any other APK so the output dir
+// holds exactly one, correctly-named file.
+listOf("release", "debug").forEach { bt ->
+    tasks.matching { it.name == "assemble${bt.replaceFirstChar { c -> c.uppercase() }}" }.configureEach {
+        doLast {
+            val dir = layout.buildDirectory.dir("outputs/apk/$bt").get().asFile
+            if (!dir.isDirectory) return@doLast
+            val target = dir.resolve("Pebble_$resolvedVersionName-$pebbleCommitHash-$bt.apk")
+            dir.listFiles { f -> f.isFile && f.extension == "apk" }?.forEach { apk ->
+                when {
+                    apk.name == target.name -> Unit
+                    target.exists() -> apk.delete()
+                    else -> apk.renameTo(target)
+                }
+            }
+        }
+    }
+}
 
 val headSha by lazy {
     project.providers.exec {
@@ -267,7 +310,7 @@ android {
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         // This uses the number of commits in the git history, so it will always increase on main
         versionCode = versioning.getVersionCode()
-        versionName = try { versioning.getVersionName() } catch (e: Exception) { "unknown" }
+        versionName = resolvedVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             //noinspection ChromeOsAbiSupport
