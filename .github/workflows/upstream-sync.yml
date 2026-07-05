@@ -140,9 +140,36 @@ jobs:
           restore-keys: |
             pipeline-gradle-${{ runner.os }}-
 
-      # --- REBASE (§4 D): restore rerere cache, rebase, abort+issue on conflict.
-      - name: Rebase tasker onto upstream/master
+      # --- RESOLVE RELEASE CUTOFF (fix for versionName="unknown"): the public repo
+      # ships no release tags, so nanogiants can't derive a real versionName.
+      # Resolve the store version + the release cutoff commit from the App Store /
+      # Notion changelog (tools/pebble_release_cutoff.py), pin `release-track` to it,
+      # and inject the version into the build below. The store version is what the
+      # Rebble cohorts firmware check needs (Cohorts.kt); rebasing onto the cutoff
+      # (not master) makes the build the SHIPPED release rather than bleeding-edge.
+      - name: Resolve release cutoff + version
+        id: version
+        run: |
+          set -eu
+          git remote get-url upstream >/dev/null 2>&1 || git remote add upstream "$UPSTREAM_URL"
+          git fetch --no-tags upstream "$UPSTREAM_BRANCH"
+          JSON="$(python3 tools/pebble_release_cutoff.py --repo . --no-fetch \
+                    --branch "upstream/${UPSTREAM_BRANCH}" --json)"
+          CUT="$(printf '%s' "$JSON" | python3 -c 'import sys,json;print(json.load(sys.stdin)["cutoff_sha"])')"
+          VER="$(printf '%s' "$JSON" | python3 -c 'import sys,json;print(json.load(sys.stdin)["store_version"])')"
+          { [ -n "$VER" ] && [ "$VER" != "None" ]; } || { echo "no store version resolved" >&2; exit 1; }
+          CUT8="$(git rev-parse --short=8 "$CUT")"
+          git update-ref refs/heads/release-track "$CUT"
+          echo "store_version=$VER" >> "$GITHUB_OUTPUT"
+          echo "cutoff_short=$CUT8" >> "$GITHUB_OUTPUT"
+          echo "Release $VER at cutoff $CUT8 (pinned release-track)"
+
+      # --- REBASE (§4 D): restore rerere cache, rebase onto the release cutoff,
+      # abort+issue on conflict.
+      - name: Rebase tasker onto the release cutoff
         id: rebase
+        env:
+          REBASE_ONTO: release-track
         run: sh tools/pipeline/lib/rebase.sh
 
       - name: Open CONFLICT issue
@@ -214,6 +241,8 @@ jobs:
           ./gradlew --no-daemon \
             :composeApp:assembleRelease \
             :tasker-bridge:testDebugUnitTest \
+            -PpebbleVersionName="${{ steps.version.outputs.store_version }}" \
+            -PpebbleCommitHash="${{ steps.version.outputs.cutoff_short }}" \
             -x uploadCrashlyticsMappingFileRelease
 
       - name: Upload build reports on failure
@@ -258,7 +287,7 @@ jobs:
           set -eu
           sh tools/pipeline/lib/sign.sh \
             "${{ steps.apk.outputs.apk }}" \
-            "app-release-signed.apk"
+            "Pebble_${{ steps.version.outputs.store_version }}-${{ steps.version.outputs.cutoff_short }}-release.apk"
 
       - name: Open SIGN FAIL issue
         if: failure() && steps.sign.outcome == 'failure'
@@ -348,7 +377,7 @@ jobs:
         run: |
           set -eu
           sh tools/pipeline/lib/publish.sh \
-            "app-release-signed.apk" \
+            "Pebble_${{ steps.version.outputs.store_version }}-${{ steps.version.outputs.cutoff_short }}-release.apk" \
             "${{ steps.apk.outputs.version_code }}" \
             "${{ env.UPSTREAM_SHA }}" \
             "${{ env.LAST_BUILT_SHA }}"

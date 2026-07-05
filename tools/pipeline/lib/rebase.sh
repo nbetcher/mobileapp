@@ -25,6 +25,9 @@
 #   UPSTREAM_URL    upstream git URL   (default: coredevices/mobileapp)
 #   UPSTREAM_BRANCH upstream branch    (default: master)
 #   TASKER_BRANCH   our patch branch   (default: tasker)
+#   REBASE_ONTO     ref to rebase onto (default: upstream/<branch>; the workflow
+#                   sets this to `release-track` = the current release cutoff so
+#                   we track the shipped store version, not bleeding-edge master)
 #   RR_CACHE_DIR    committed rerere cache (default: tools/pipeline/rr-cache)
 #   GIT_DIR         git dir            (default: .git)
 #
@@ -72,10 +75,12 @@ git fetch --no-tags upstream "$UPSTREAM_BRANCH"
 # --- 3. Check out tasker and rebase onto upstream/master. ---------------------
 git checkout "$TASKER_BRANCH"
 
-echo "rebase.sh: rebasing $TASKER_BRANCH onto upstream/$UPSTREAM_BRANCH" >&2
+# Rebase onto the release cutoff (release-track) when the caller set REBASE_ONTO, else upstream/master.
+REBASE_ONTO="${REBASE_ONTO:-upstream/$UPSTREAM_BRANCH}"
+echo "rebase.sh: rebasing $TASKER_BRANCH onto $REBASE_ONTO" >&2
 # rerere.enabled is forced on via -c too, belt-and-braces with the config above.
 rc=0
-git -c rerere.enabled=true rebase "upstream/$UPSTREAM_BRANCH" || rc=$?
+git -c rerere.enabled=true rebase "$REBASE_ONTO" || rc=$?
 
 # --- helper: copy any (re)recorded resolutions back into the in-repo cache. ---
 sync_cache_out() {
@@ -106,8 +111,8 @@ sync_cache_out
 # These are written to files the caller can attach (best-effort; never fatal).
 git diff --name-only --diff-filter=U > /tmp/pipeline-conflict-files.txt 2>/dev/null || true
 # Range = what upstream added since our merge-base with tasker.
-if base="$(git merge-base "$TASKER_BRANCH" "upstream/$UPSTREAM_BRANCH" 2>/dev/null)"; then
-  git log --oneline "$base..upstream/$UPSTREAM_BRANCH" \
+if base="$(git merge-base "$TASKER_BRANCH" "$REBASE_ONTO" 2>/dev/null)"; then
+  git log --oneline "$base..$REBASE_ONTO" \
     > /tmp/pipeline-upstream-range.txt 2>/dev/null || true
 fi
 
