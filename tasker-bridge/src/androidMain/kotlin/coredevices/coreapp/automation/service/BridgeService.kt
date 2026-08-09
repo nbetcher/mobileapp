@@ -109,6 +109,10 @@ class BridgeService : Service(), KoinComponent {
         }
 
         override fun unregisterEventListener(clientToken: String) {
+            // Tokens are sequential ("t1", "t2", ...) and the service is exported, so without this
+            // check any app could unregister another client's listener and silently stop its events.
+            val record = verifiedOrNull() ?: return
+            if (tokens[clientToken] != record.packageName) return
             listenerHub.unregister(clientToken)
         }
 
