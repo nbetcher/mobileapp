@@ -133,8 +133,54 @@ jobs:
       - name: Provision build inputs
         run: |
           set -eu
-          # Firebase: committed dummy, same as upstream's build.yml.
-          cp androidApp/src/google-services-dummy.json androidApp/src/google-services.json
+          # Firebase: generate the placeholder config rather than copying the committed dummy.
+          # The dummy is a fork-added file whose path has moved between upstream releases
+          # (composeApp/ -> androidApp/) and which a release-track merge does not always carry,
+          # so a `cp` couples every build to what the merge happened to produce.
+          GS_DIR="androidApp/src"
+          [ -d "$GS_DIR" ] || GS_DIR="composeApp/src"
+          mkdir -p "$GS_DIR"
+          cat > "$GS_DIR/google-services.json" <<'JSON'
+          {
+            "project_info": {
+              "project_number": "replaceme",
+              "project_id": "replaceme",
+              "storage_bucket": "replaceme"
+            },
+            "client": [
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "replaceme",
+                  "android_client_info": {
+                    "package_name": "coredevices.coreapp"
+                  }
+                },
+                "oauth_client": [
+                  {
+                    "client_id": "replaceme",
+                    "client_type": 3
+                  }
+                ],
+                "api_key": [
+                  {
+                    "current_key": "replaceme"
+                  }
+                ],
+                "services": {
+                  "appinvite_service": {
+                    "other_platform_oauth_client": [
+                      {
+                        "client_id": "replaceme",
+                        "client_type": 3
+                      }
+                    ]
+                  }
+                }
+              }
+            ],
+            "configuration_version": "1"
+          }
+          JSON
           # CI release path (not the debug-signed LOCAL_RELEASE_BUILD shortcut),
           # so the real release signingConfig is exercised.
           {
