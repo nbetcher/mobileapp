@@ -117,6 +117,14 @@ jobs:
   # ===========================================================================
   sync:
     runs-on: ubuntu-latest
+    env:
+      # Gemini CLI treats a fresh CI checkout as an UNTRUSTED folder and silently
+      # downgrades --yolo to approval-required ("Approval mode overridden to
+      # default because the current folder is not trusted"), which then dies
+      # waiting for input. This is the documented opt-in for headless runs. Set at
+      # job level, not on the step: the action is composite, and job-level env is
+      # what reliably reaches the process it spawns.
+      GEMINI_CLI_TRUST_WORKSPACE: "true"
     outputs:
       proceed: ${{ steps.decide.outputs.proceed }}
       version: ${{ steps.cutoff.outputs.changelog_version }}
