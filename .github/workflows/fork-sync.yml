@@ -109,6 +109,11 @@ env:
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   GH_REPO: ${{ github.repository }}
   RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  # issue.sh defaults to `@me`, which under an installation token resolves to the
+  # Actions bot — GitHub rejects that ("Assigning agents is not supported with
+  # GitHub App installation tokens") and NO failure issue gets filed at all.
+  # Assign the human owner, which is also what makes the phone push fire (§7).
+  PIPELINE_ASSIGNEE: ${{ github.repository_owner }}
 
 jobs:
   # ===========================================================================
@@ -514,6 +519,36 @@ jobs:
         id: tapcheck
         if: steps.decide.outputs.proceed == 'true'
         run: sh tools/pipeline/lib/tap-check.sh
+
+      # --- GITHUB_TOKEN may never push a commit that creates or updates anything
+      # under .github/workflows — that needs a `workflows` scope no `permissions:`
+      # key can grant, so the push is rejected outright. Upstream edits build.yml
+      # regularly, so every merge would carry one and every run would die here.
+      #
+      # Their workflow files are DISABLED in this fork by design (build.yml's iOS
+      # job, release.yml's master-corrupting publish), so their content is worth
+      # nothing to us: pin the whole path back to our side and let the merge commit
+      # carry no workflow change at all. The alternative — a PAT with `workflow`
+      # scope in secrets — buys only fidelity in files we deliberately don't run.
+      - name: Keep our .github/workflows out of the merge
+        id: pinworkflows
+        if: steps.decide.outputs.proceed == 'true'
+        env:
+          PRE: ${{ steps.merge.outputs.pre_merge }}
+        run: |
+          set -eu
+          if git diff --quiet "$PRE" HEAD -- .github/workflows; then
+            echo "merge carried no workflow change."
+            exit 0
+          fi
+          echo "reverting upstream workflow changes carried by the merge:"
+          git diff --name-only "$PRE" HEAD -- .github/workflows
+          # rm + checkout, not `checkout` alone: this must also drop workflow files
+          # the merge ADDED, so the path ends up byte-identical to our pre-merge side.
+          rm -rf .github/workflows
+          git checkout "$PRE" -- .github/workflows
+          git add -A .github/workflows
+          git commit -m "pipeline: keep our .github/workflows (GITHUB_TOKEN cannot push workflow changes)"
 
       # --- PUSH the merged branch + the synced refs. --------------------------
       - name: Push tasker, release-track and master

@@ -39,7 +39,10 @@ string the pipeline records as `last_synced_version`.
    **new** upstream version moves the pipeline.
 4. **Merge** the cutoff into `tasker`, in three tiers — see below.
 5. **Tap-drift check** (`tap-check.sh`) — greps the `// BRIDGE-TAP: <id>` anchors.
-6. **Push** `tasker`, pin `release-track` to the cutoff, fast-forward the `master` mirror.
+6. **Pin `.github/workflows` back to our side**, then **push** `tasker`, pin `release-track` to the
+   cutoff, and fast-forward the `master` mirror. (`GITHUB_TOKEN` cannot push a commit that touches
+   `.github/workflows` — no `permissions:` key grants it — and upstream edits `build.yml` often, so
+   the merge's workflow changes are dropped. They're disabled in this fork regardless.)
 7. **Tag + release** `v<version>-tasker.<N>`, *before* the build.
 8. **Build** via `android-release.yml` → `Pebble_<version>-<commit8>-<counter>.apk`, signed.
 9. **Finalize** — attach the APK + `.sha256` on success; on failure delete the **release**, keep
