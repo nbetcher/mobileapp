@@ -2,9 +2,7 @@
   "build_counters": {
     "1.8.0.6": 4
   },
-  "build_strikes": [
-    "1.8.0.6"
-  ],
+  "build_strikes": [],
   "cutoff": {
     "branch_head_position": 2105,
     "changelog_version": "1.8.0.6",
