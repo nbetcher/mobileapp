@@ -1,0 +1,28 @@
+{
+  "build_counters": {
+    "1.8.0.6": 1
+  },
+  "cutoff": {
+    "branch_head_position": 2105,
+    "changelog_version": "1.8.0.6",
+    "cutoff_position": 2096,
+    "cutoff_sha": "3d3c997144d81add1b19957c36b78963547197fb",
+    "items_matched": 1,
+    "items_total": 2,
+    "method": "date-fallback",
+    "release_date": "2026-08-03",
+    "store_source": "itunes",
+    "store_version": "1.8.0.7",
+    "unreleased_commits_beyond_cutoff": 9
+  },
+  "last_synced_cutoff": "3d3c997144d81add1b19957c36b78963547197fb",
+  "last_synced_version": "1.8.0.6",
+  "previous": {
+    "last_synced_cutoff": null,
+    "last_synced_tasker": null,
+    "last_synced_version": null
+  },
+  "run_url": "https://github.com/nbetcher/mobileapp/actions/runs/31306793191",
+  "status": "merging",
+  "updated_at": "2026-08-09T09:48:46Z"
+}
