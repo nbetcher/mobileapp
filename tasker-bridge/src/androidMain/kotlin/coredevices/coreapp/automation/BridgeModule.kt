@@ -33,5 +33,13 @@ val taskerModule = module {
     single<StateProvider> { LibPebbleStateProvider(get(), get<Context>()) }
     single<CommandHandler> { LibPebbleCommandHandler(get<LibPebble>(), get<EventDispatcher>()) }
     single { CommandExecutor(get<CommandHandler>()) }
+    single {
+        ClientTether(
+            appContext = get<Context>(),
+            libPebble = get<LibPebble>(),
+            trustStore = get<ClientTrustStore>(),
+            inspector = get<PackageInspector>(),
+        )
+    }
     singleOf(::AutomationBridge)
 }

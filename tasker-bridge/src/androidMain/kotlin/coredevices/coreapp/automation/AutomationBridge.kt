@@ -31,6 +31,7 @@ class AutomationBridge(
     private val listenerHub: ListenerHub,
     private val trustStore: ClientTrustStore,
     private val settings: AutomationSettings,
+    private val clientTether: ClientTether,
 ) {
     private val logger = Logger.withTag("AutomationBridge")
 
@@ -65,6 +66,9 @@ class AutomationBridge(
         appMessages.start(scope)
         timeline.start(scope)
         listenerHub.start(scope)
+        // Keep consented clients alive while a watch is connected so events aren't delivered to a dead
+        // process (the reverse-bind tether). No-op for clients that don't expose a KEEP_ALIVE service.
+        clientTether.start(scope)
     }
 
     /**
@@ -79,6 +83,10 @@ class AutomationBridge(
         AutomationNotificationHooks.onAction = null
         AutomationAppMessageHook.onReceived = null
         AutomationTimelineHook.onAction = null
+        // Cancel the collectors FIRST: ClientTether's reconcile loop lives in this scope, and a
+        // pending emission arriving after stop() would re-bind clients that nothing would ever
+        // unbind (stop() has already cleared its bookkeeping) — a leaked ServiceConnection.
         scope.coroutineContext.cancelChildren()
+        clientTether.stop()
     }
 }

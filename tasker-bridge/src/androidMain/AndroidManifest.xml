@@ -1,5 +1,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- See (and bind) any automation client that exposes a KEEP_ALIVE service, without hardcoding a
+         package (Android 11+ package visibility). Enables the reverse-bind tether (ClientTether) to
+         keep consented clients alive while a watch is connected. -->
+    <queries>
+        <intent>
+            <action android:name="coredevices.coreapp.automation.KEEP_ALIVE" />
+        </intent>
+    </queries>
+
     <application>
         <!-- Exported with NO permission attribute: every Binder transaction is authenticated in
              code via CallerVerifier (allowlist + TOFU cert pinning), ADR-003 / HLDD-001 §8. -->
