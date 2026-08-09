@@ -1,0 +1,963 @@
+# =============================================================================
+# fork-sync.yml — sync this fork to the RELEASED upstream commit, merge our
+# Tasker patches onto it, then tag, release, and build.
+#
+# WHAT "the released commit" MEANS
+# --------------------------------
+# Upstream (coredevices/mobileapp) publishes no tags and no releases, and the
+# shipped APK's versionCode is not a public commit count (HLDD-004 §3). What is
+# resolvable is the released commit's POSITION in public history:
+# tools/pebble_release_cutoff.py reads the live store version, pulls that
+# version's changelog bullets from ndocs.repebble.com, fuzzy-matches them against
+# `git log` subjects (author dates survive Core Devices' internal->public
+# rebase-sync; committer dates do not), and returns the highest-positioned
+# matched commit — upstream HEAD minus a drift RE-MEASURED every run:
+#
+#     cutoff_position = branch_head_position - unreleased_commits_beyond_cutoff
+#
+# THE VERSION LEDGER
+# ------------------
+# `last_synced_version` is the version string from column 2 of the changelog
+# table at https://ndocs.repebble.com/changelog (col 1 = date, col 2 = version,
+# col 3 = notes). It lives in tools/pipeline/sync-state.json on the
+# `pipeline-state` branch and drives everything:
+#
+#   version unchanged  -> nothing to do, exit quietly (even if last build failed:
+#                         "sync+merge ok but build failed" is left ALONE)
+#   merge fails        -> merge reverted, ledger rolled back to the previous
+#                         version, MERGE-FAIL issue, next tick retries
+#   merge ok, build ok -> ledger advanced, strikes cleared
+#   merge ok, build KO -> ledger stays advanced (merge is kept), the release is
+#                         deleted but the TAG is kept, and the version is added
+#                         to the strike list. THREE struck versions => critical
+#                         issue + this workflow disables itself.
+#
+# Re-enable after a self-disable:  gh workflow enable fork-sync.yml
+#                    then dispatch with reset_strikes=true.
+#
+# Merge conflicts are resolved in three escalating tiers (rerere replay ->
+# Gemini CLI -> abort+revert), see the merge step.
+#
+# Extra secret this needs beyond the signing set: GEMINI_API_KEY (Google AI
+# Studio). Without it the AI tier fails and merges fall back to abort+revert.
+#
+# Supersedes upstream-sync.yml (deleted). Reuses its helpers unchanged:
+# lib/issue.sh, lib/tap-check.sh, lib/sign.sh, and the tools/pipeline/rr-cache.
+# =============================================================================
+name: fork-sync
+
+on:
+  schedule:
+    # 30 4 * * * UTC == 21:30 America/Phoenix the previous evening
+    # (MST, UTC-7, no DST).
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Override the store version (e.g. 1.8.0.6) instead of looking it up"
+        type: string
+        required: false
+        default: ""
+      force:
+        description: "Re-sync even if the changelog version is unchanged"
+        type: boolean
+        required: false
+        default: false
+      reset_strikes:
+        description: "Clear the build-failure strike list before running"
+        type: boolean
+        required: false
+        default: false
+      no_ai_merge:
+        description: "Disable Gemini conflict resolution (rerere only)"
+        type: boolean
+        required: false
+        default: false
+      model:
+        description: "Gemini model for conflict resolution (blank = gemini-3.6-flash; escalate with gemini-3.1-pro-preview)"
+        type: string
+        required: false
+        default: ""
+      allow_rewind:
+        description: "Permit release-track to move BACKWARDS (non-fast-forward)"
+        type: boolean
+        required: false
+        default: false
+      dry_run:
+        description: "Resolve + merge locally and report, but push nothing and skip the build"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write   # push tasker/master/release-track, tags, releases
+  issues: write     # failure issues (issue.sh)
+  actions: write    # disable upstream CI; self-disable on 3 strikes
+
+concurrency:
+  group: fork-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_URL: https://github.com/coredevices/mobileapp.git
+  UPSTREAM_BRANCH: master
+  MIRROR_BRANCH: master
+  RELEASE_BRANCH: release-track
+  TASKER_BRANCH: tasker
+  STATE_BRANCH: pipeline-state
+  STATE_FILE: tools/pipeline/sync-state.json
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  GH_REPO: ${{ github.repository }}
+  RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+jobs:
+  # ===========================================================================
+  # SYNC — resolve the released version, merge it, tag it, cut the release.
+  # Everything here is undone by the revert step if the merge doesn't verify.
+  # ===========================================================================
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      proceed: ${{ steps.decide.outputs.proceed }}
+      version: ${{ steps.cutoff.outputs.changelog_version }}
+      cutoff_short: ${{ steps.cutoff.outputs.short }}
+      counter: ${{ steps.decide.outputs.counter }}
+      tag: ${{ steps.release.outputs.tag }}
+      merged_sha: ${{ steps.push.outputs.merged_sha }}
+    steps:
+      - name: Check out tasker (full history)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TASKER_BRANCH }}
+          fetch-depth: 0      # cutoff is a commit POSITION; versionCode too
+          fetch-tags: true    # existing v<version>-tasker.<N> tags
+          persist-credentials: true
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "pipeline-bot"
+          git config user.email "pipeline-bot@users.noreply.github.com"
+
+      # --- Upstream's own CI must not run in this fork. -----------------------
+      # build.yml fires on every push (android + an ios job on macos-15 we have
+      # no use for and that bills at 10x). release.yml fires on `release:
+      # published` — it builds XCFrameworks on macOS, COMMITS Package.swift to
+      # master and pushes swiftpm-* tags, which would corrupt the master mirror
+      # the moment we cut a release. Disabling is repo state, not code, so no
+      # merge can undo it and nothing diverges from upstream.
+      - name: Disable upstream CI in this fork
+        run: |
+          set -eu
+          for wf in build.yml release.yml; do
+            if gh workflow disable "$wf" >/dev/null 2>&1; then
+              echo "disabled $wf"
+            else
+              echo "$wf already disabled or absent"
+            fi
+          done
+
+      - name: Fetch upstream master
+        id: upstream
+        run: |
+          set -eu
+          git remote get-url upstream >/dev/null 2>&1 \
+            || git remote add upstream "$UPSTREAM_URL"
+          git fetch --no-tags upstream "$UPSTREAM_BRANCH"
+          UP="$(git rev-parse "upstream/${UPSTREAM_BRANCH}")"
+          echo "sha=$UP" >> "$GITHUB_OUTPUT"
+          echo "short=$(git rev-parse --short=8 "$UP")" >> "$GITHUB_OUTPUT"
+
+      # --- The ledger lives on its own branch; check it out once as a worktree
+      # at .state/ and reuse it for every read/write in this job. --------------
+      - name: Load ledger
+        id: ledger
+        run: |
+          set -eu
+          if git ls-remote --exit-code --heads origin "$STATE_BRANCH" >/dev/null 2>&1; then
+            git fetch --no-tags origin "$STATE_BRANCH"
+            git worktree add --force --detach .state FETCH_HEAD
+          else
+            git worktree add --force --detach .state
+            ( cd .state && git checkout --orphan "$STATE_BRANCH" && git rm -rf . >/dev/null 2>&1 || true )
+          fi
+          mkdir -p ".state/$(dirname "$STATE_FILE")"
+
+          RESET="${{ inputs.reset_strikes }}" python3 - >> "$GITHUB_OUTPUT" <<'PY'
+          import json, os, pathlib
+          p = pathlib.Path(".state") / os.environ["STATE_FILE"]
+          s = json.loads(p.read_text()) if p.exists() else {}
+          if os.environ.get("RESET") == "true":
+              s["build_strikes"] = []
+              p.write_text(json.dumps(s, indent=2, sort_keys=True) + "\n")
+          print("last_version=" + str(s.get("last_synced_version", "")))
+          print("strikes=" + ",".join(s.get("build_strikes", [])))
+          print("strike_count=" + str(len(s.get("build_strikes", []))))
+          PY
+
+          # Persist a manual strike reset immediately — otherwise it would be
+          # lost on a run that finds nothing new to sync.
+          if [ "${{ inputs.reset_strikes }}" = "true" ] && [ "${{ inputs.dry_run }}" != "true" ]; then
+            cd .state
+            [ -f "$STATE_FILE" ] && git add "$STATE_FILE"
+            git -c user.name="pipeline-bot" -c user.email="pipeline-bot@users.noreply.github.com" \
+                commit -m "pipeline: build strikes cleared by manual dispatch" --allow-empty
+            git push origin "HEAD:refs/heads/${STATE_BRANCH}" || {
+              git fetch --no-tags origin "$STATE_BRANCH"
+              git rebase FETCH_HEAD
+              git push origin "HEAD:refs/heads/${STATE_BRANCH}"
+            }
+            cd - >/dev/null
+          fi
+
+      # --- RESOLVE the released cutoff. ---------------------------------------
+      # Exit 0 = >=2 changelog bullets matched a commit subject; exit 3 = fewer
+      # matched, so it fell back to "newest commit AUTHORED on or before the
+      # release date". Exit 3 is ACCEPTED (upstream changelog entries are often
+      # only 1-2 bullets — 1.8.0.6 had two — so the >=2 bar frequently can't be
+      # cleared even when the date answer is right); it's flagged, not fatal.
+      - name: Resolve release cutoff
+        id: cutoff
+        env:
+          VERSION_OVERRIDE: ${{ inputs.version }}
+        run: |
+          set -eu
+          set -- --repo . --no-fetch --branch "upstream/${UPSTREAM_BRANCH}" --json -v
+          if [ -n "${VERSION_OVERRIDE:-}" ]; then
+            set -- "$@" --version "$VERSION_OVERRIDE"
+          fi
+          rc=0
+          python3 tools/pebble_release_cutoff.py "$@" \
+            > /tmp/cutoff.json 2>/tmp/pipeline-cutoff.log || rc=$?
+          cat /tmp/pipeline-cutoff.log >&2
+          case "$rc" in
+            0) fallback=false ;;
+            3) fallback=true ;;
+            *) echo "cutoff resolver failed (exit $rc)" >&2; exit 1 ;;
+          esac
+
+          # One parse, one process: emit every field as key=value and source it, rather than
+          # respawning python per field.
+          python3 - <<'PY'
+          import json, shlex
+          d = json.load(open("/tmp/cutoff.json"))
+          pairs = [(out, "" if d.get(key) is None else str(d[key])) for out, key in (
+              ("sha", "cutoff_sha"),
+              ("store_version", "store_version"),
+              ("changelog_version", "changelog_version"),
+              ("release_date", "release_date"),
+              ("method", "method"),
+              ("items_matched", "items_matched"),
+              ("items_total", "items_total"),
+              ("position", "cutoff_position"),
+              ("head_position", "branch_head_position"),
+              ("drift", "unreleased_commits_beyond_cutoff"))]
+          # Plain key=value for $GITHUB_OUTPUT; shell-quoted twin for `.` so a value can never be
+          # re-interpreted as shell.
+          open("/tmp/cutoff.env", "w").write("".join(f"{k}={v}\n" for k, v in pairs))
+          open("/tmp/cutoff.sh", "w").write("".join(f"{k}={shlex.quote(v)}\n" for k, v in pairs))
+          PY
+          . /tmp/cutoff.sh
+          # An empty sha/version would otherwise sail on and make `decide` compare "" against the
+          # ledger — which matches a fresh ledger and silently reports "already synced".
+          { [ -n "$sha" ] && [ -n "$changelog_version" ]; } \
+            || { echo "resolver returned no cutoff_sha/changelog_version" >&2; exit 1; }
+          CUT="$sha"
+          {
+            cat /tmp/cutoff.env
+            echo "short=$(git rev-parse --short=8 "$CUT")"
+            echo "fallback=$fallback"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$fallback" = "true" ]; then
+            echo "::warning title=Date-fallback cutoff::matched ${items_matched}/${items_total} changelog items; cutoff taken from the release date (position ${position}/${head_position})"
+          fi
+
+      # --- Is there anything new? --------------------------------------------
+      # The ledger version is the ONLY gate. A version whose build failed stays
+      # recorded, so it is not retried automatically — exactly as specified.
+      - name: Decide whether to sync
+        id: decide
+        env:
+          NEW_VERSION: ${{ steps.cutoff.outputs.changelog_version }}
+          LAST_VERSION: ${{ steps.ledger.outputs.last_version }}
+          CUT: ${{ steps.cutoff.outputs.sha }}
+        run: |
+          set -eu
+          if [ "$NEW_VERSION" = "$LAST_VERSION" ] && [ "${{ inputs.force }}" != "true" ]; then
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            echo "Already synced to $NEW_VERSION; nothing to do."
+            exit 0
+          fi
+          # Sanity: the cutoff must really be on upstream master.
+          git merge-base --is-ancestor "$CUT" "upstream/${UPSTREAM_BRANCH}" || {
+            echo "cutoff $CUT is not an ancestor of upstream/${UPSTREAM_BRANCH}" >&2
+            exit 1
+          }
+          # Per-version build counter -> tag suffix and APK filename.
+          NEW_VERSION="$NEW_VERSION" python3 - >> "$GITHUB_OUTPUT" <<'PY'
+          import json, os, pathlib
+          p = pathlib.Path(".state") / os.environ["STATE_FILE"]
+          s = json.loads(p.read_text()) if p.exists() else {}
+          v = os.environ["NEW_VERSION"]
+          print("counter=" + str(s.get("build_counters", {}).get(v, 0) + 1))
+          PY
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+          echo "New release $NEW_VERSION (was '${LAST_VERSION:-none}')"
+
+      # --- Record the ATTEMPT before touching code, so a failure has something
+      # to roll back (the spec: a failed merge rolls the ledger back). ---------
+      - name: Record sync attempt
+        id: attempt
+        if: steps.decide.outputs.proceed == 'true' && inputs.dry_run != true
+        env:
+          NEW_VERSION: ${{ steps.cutoff.outputs.changelog_version }}
+          CUT: ${{ steps.cutoff.outputs.sha }}
+          COUNTER: ${{ steps.decide.outputs.counter }}
+        run: |
+          set -eu
+          NEW_VERSION="$NEW_VERSION" CUT="$CUT" RUN_URL="$RUN_URL" COUNTER="$COUNTER" \
+          CUTOFF_JSON=/tmp/cutoff.json python3 - <<'PY'
+          import json, os, pathlib
+          from datetime import datetime, timezone
+          p = pathlib.Path(".state") / os.environ["STATE_FILE"]
+          s = json.loads(p.read_text()) if p.exists() else {}
+          # Snapshot what we're about to overwrite: this is the rollback target.
+          s["previous"] = {k: s.get(k) for k in
+                           ("last_synced_version", "last_synced_cutoff", "last_synced_tasker")}
+          # Burn the build counter HERE, not in finalize. The tag name is derived from it, so if
+          # finalize never lands (job failed / ledger push lost) the next `force` dispatch must not
+          # recompute the SAME counter and collide with the tag this run is about to create.
+          s.setdefault("build_counters", {})[os.environ["NEW_VERSION"]] = int(os.environ["COUNTER"])
+          s["last_synced_version"] = os.environ["NEW_VERSION"]
+          s["last_synced_cutoff"] = os.environ["CUT"]
+          s["status"] = "merging"
+          s["cutoff"] = {k: v for k, v in json.load(open(os.environ["CUTOFF_JSON"])).items()
+                         if k != "matches"}
+          s["run_url"] = os.environ["RUN_URL"]
+          s["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+          p.write_text(json.dumps(s, indent=2, sort_keys=True) + "\n")
+          PY
+          cd .state
+          git add "$STATE_FILE"
+          git -c user.name="pipeline-bot" -c user.email="pipeline-bot@users.noreply.github.com" \
+              commit -m "pipeline: attempting sync to $NEW_VERSION" --allow-empty
+          git push origin "HEAD:refs/heads/${STATE_BRANCH}" || {
+            git fetch --no-tags origin "$STATE_BRANCH"
+            git rebase FETCH_HEAD
+            git push origin "HEAD:refs/heads/${STATE_BRANCH}"
+          }
+
+      # =======================================================================
+      # MERGE — three tiers, cheapest first:
+      #   1. plain merge; rerere replays every conflict we've resolved before
+      #   2. Gemini CLI resolves what's left, headlessly, on this runner
+      #   3. abort -> the revert step puts code and ledger back
+      # Whatever tier 2 resolves is recorded into tools/pipeline/rr-cache and
+      # committed, so tier 1 handles that same conflict for free next time.
+      # =======================================================================
+      - name: Merge the release cutoff into tasker
+        id: merge
+        if: steps.decide.outputs.proceed == 'true'
+        env:
+          CUT: ${{ steps.cutoff.outputs.sha }}
+          NEW_VERSION: ${{ steps.cutoff.outputs.changelog_version }}
+          CUT8: ${{ steps.cutoff.outputs.short }}
+        run: |
+          set -eu
+          echo "pre_merge=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+          # Replay cache: the committed rr-cache is the pipeline's memory of
+          # every conflict a human (or Gemini) has already resolved.
+          if [ -d tools/pipeline/rr-cache ]; then
+            mkdir -p .git/rr-cache
+            cp -R tools/pipeline/rr-cache/. .git/rr-cache/ 2>/dev/null || true
+          fi
+          git config rerere.enabled true
+          git config rerere.autoupdate true
+
+          MSG="sync: merge upstream release ${NEW_VERSION} (${CUT8}) into ${TASKER_BRANCH}"
+          if git merge --no-edit -m "$MSG" "$CUT"; then
+            echo "resolved_by=clean" >> "$GITHUB_OUTPUT"
+            echo "conflicted=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # rerere.autoupdate may have staged every resolution already; if no
+          # unmerged paths remain, the merge just needs committing.
+          if [ -z "$(git diff --name-only --diff-filter=U)" ]; then
+            git commit --no-edit -m "$MSG"
+            echo "resolved_by=rerere" >> "$GITHUB_OUTPUT"
+            echo "conflicted=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git diff --name-only --diff-filter=U > /tmp/pipeline-conflict-files.txt
+          echo "conflicted=true" >> "$GITHUB_OUTPUT"
+          echo "::warning title=Merge conflicts::$(wc -l < /tmp/pipeline-conflict-files.txt) file(s) still conflicted after rerere replay"
+          cat /tmp/pipeline-conflict-files.txt
+
+      - name: Resolve conflicts with Gemini
+        id: ai
+        if: steps.merge.outputs.conflicted == 'true' && inputs.no_ai_merge != true
+        # The action installs the CLI and invokes it with --yolo, which is what
+        # lets it edit the working tree and run git commands unattended. Auth is
+        # the GEMINI_API_KEY repo secret (AI Studio; free-tier quota covers a
+        # handful of merges a month). Pinned by commit SHA per HLDD-004 §9.
+        uses: google-github-actions/run-gemini-cli@f77273f4c914e4bf38440cf36a0369cb64a37489  # v0.1.22
+        env:
+          # --yolo gives the model a shell, and the text it reasons over is UPSTREAM code we do not
+          # control. The workflow-level GITHUB_TOKEN carries contents/issues/actions:write, so a
+          # prompt injection landing in a conflicted hunk could push refs or disable workflows.
+          # Blank it for this step — conflict resolution needs GEMINI_API_KEY and nothing else.
+          GITHUB_TOKEN: ""
+          GH_TOKEN: ""
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          # Deliberately a STABLE id, not a preview one. Preview ids get retired
+          # (gemini-3-pro-preview already was), and a pipeline that fires a few
+          # times a month would rot silently on one. 3.6-flash is the newest
+          # stable and is tuned for agentic work. Dispatch with
+          # model=gemini-3.1-pro-preview to escalate a merge that flash muffed.
+          gemini_model: ${{ inputs.model || 'gemini-3.6-flash' }}
+          prompt: |
+            You are on an ephemeral CI runner, inside a git repository that is in the
+            middle of a merge. This repo is a fork of coredevices/mobileapp; the fork
+            adds a Tasker automation bridge. We are merging a newer upstream release
+            commit into our patch branch and some files are conflicted.
+
+            Resolve EVERY conflict, then `git add` each resolved file. Do NOT commit,
+            do NOT push, do NOT run git merge/rebase/reset, and do NOT touch any file
+            that is not conflicted.
+
+            Rules for resolving:
+            - Keep upstream's change AND our fork's change wherever both can coexist.
+              Upstream owns app/libpebble3 behaviour; we own the tasker-bridge module,
+              its DI registration, its settings screen, and the "// BRIDGE-TAP: <id>"
+              call sites in libpebble3 that forward events to AutomationNotificationHooks.
+            - Never drop a "// BRIDGE-TAP: <id>" anchor comment or its adjacent
+              AutomationNotificationHooks call. If upstream restructured the function
+              it lived in, re-attach the same call at the equivalent new choke point.
+            - If upstream deleted code our patch depended on, prefer upstream's new
+              shape and adapt our call to it rather than resurrecting the old code.
+            - Leave no conflict markers behind.
+
+            List the conflicted files with `git diff --name-only --diff-filter=U`, then
+            fix them one by one. Finish by reporting one line per file: path + how you
+            resolved it.
+
+      - name: Capture Gemini transcript
+        # The action returns its transcript as step outputs rather than a log
+        # file; persist them so the MERGE-FAIL issue can quote what it tried.
+        if: always() && steps.ai.outcome != 'skipped'
+        env:
+          GEMINI_SUMMARY: ${{ steps.ai.outputs.summary }}
+          GEMINI_ERROR: ${{ steps.ai.outputs.error }}
+        run: |
+          {
+            printf '%s\n' "${GEMINI_SUMMARY:-(no summary returned)}"
+            if [ -n "${GEMINI_ERROR:-}" ]; then
+              printf '\n--- errors ---\n%s\n' "$GEMINI_ERROR"
+            fi
+          } > /tmp/pipeline-gemini.log || true
+
+      # --- VERIFY whatever the AI did, before it can reach the remote. --------
+      - name: Verify resolution
+        id: verify
+        if: steps.merge.outputs.conflicted == 'true'
+        run: |
+          set -eu
+          fail=0
+          # 1. nothing may remain unmerged
+          if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+            echo "still unmerged:" >&2
+            git diff --name-only --diff-filter=U >&2
+            fail=1
+          fi
+          # 2. no conflict markers left in the files that were conflicted
+          #    (checked only in those files: '=======' is legal text elsewhere)
+          while IFS= read -r f; do
+            [ -f "$f" ] || continue
+            if grep -qE '^(<<<<<<<|>>>>>>>)' "$f"; then
+              echo "conflict markers remain in $f" >&2
+              fail=1
+            fi
+          done < /tmp/pipeline-conflict-files.txt
+          [ "$fail" = "0" ] || exit 1
+
+          # `add -u`, NOT `add -A`: stage tracked edits and deletions (every
+          # conflicted path is already tracked) while leaving anything the agent
+          # dropped in the tree — .gemini/, scratch files, tool logs — out of the
+          # merge commit.
+          git add -u
+          git commit --no-edit -m "sync: merge upstream release ${{ steps.cutoff.outputs.changelog_version }} (${{ steps.cutoff.outputs.short }}) into ${TASKER_BRANCH}"
+
+          # Teach the replay cache what was just resolved, so the next occurrence
+          # of this same conflict needs no AI at all.
+          if [ -d .git/rr-cache ]; then
+            mkdir -p tools/pipeline/rr-cache
+            cp -R .git/rr-cache/. tools/pipeline/rr-cache/ 2>/dev/null || true
+            git add tools/pipeline/rr-cache
+            git diff --cached --quiet || git commit -m "pipeline: record rerere resolutions from the ${{ steps.cutoff.outputs.changelog_version }} merge"
+          fi
+
+      # --- The taps are the fork's whole point; a clean compile would not
+      # notice them silently detaching, so grep for the anchors. --------------
+      - name: Tap-drift check
+        id: tapcheck
+        if: steps.decide.outputs.proceed == 'true'
+        run: sh tools/pipeline/lib/tap-check.sh
+
+      # --- PUSH the merged branch + the synced refs. --------------------------
+      - name: Push tasker, release-track and master
+        id: push
+        if: steps.decide.outputs.proceed == 'true' && inputs.dry_run != true
+        env:
+          CUT: ${{ steps.cutoff.outputs.sha }}
+        run: |
+          set -eu
+          MERGED="$(git rev-parse HEAD)"
+          echo "merged_sha=$MERGED" >> "$GITHUB_OUTPUT"
+          git push origin "HEAD:refs/heads/${TASKER_BRANCH}"
+
+          # release-track = the released commit itself, for diffing/bisecting.
+          # A released commit never un-ships, so a backwards move means the match
+          # went wrong; refuse unless explicitly allowed.
+          OLD="$(git ls-remote --heads origin "$RELEASE_BRANCH" | awk 'NR==1 {print $1}')"
+          if [ -z "$OLD" ]; then
+            git push origin "${CUT}:refs/heads/${RELEASE_BRANCH}"
+          elif [ "$OLD" != "$CUT" ]; then
+            if git cat-file -e "${OLD}^{commit}" 2>/dev/null && git merge-base --is-ancestor "$OLD" "$CUT"; then
+              git push --force-with-lease="refs/heads/${RELEASE_BRANCH}:${OLD}" \
+                origin "${CUT}:refs/heads/${RELEASE_BRANCH}"
+            elif [ "${{ inputs.allow_rewind }}" = "true" ]; then
+              git push --force-with-lease="refs/heads/${RELEASE_BRANCH}:${OLD}" \
+                origin "${CUT}:refs/heads/${RELEASE_BRANCH}"
+            else
+              echo "::warning title=release-track not moved::$OLD -> $CUT would be non-fast-forward; re-dispatch with allow_rewind=true if that is intended"
+            fi
+          fi
+
+          # master stays a plain mirror of upstream (fast-forward only).
+          git push origin "refs/remotes/upstream/${UPSTREAM_BRANCH}:refs/heads/${MIRROR_BRANCH}" \
+            || echo "::warning title=master diverged::could not fast-forward ${MIRROR_BRANCH}; the mirror needs a human"
+
+      # --- TAG + RELEASE, both BEFORE the build (per spec). The build job
+      # attaches the APK on success; the finalize job deletes the RELEASE (never
+      # the tag) on failure. ---------------------------------------------------
+      - name: Create tag + release
+        id: release
+        if: steps.decide.outputs.proceed == 'true' && inputs.dry_run != true
+        env:
+          NEW_VERSION: ${{ steps.cutoff.outputs.changelog_version }}
+          COUNTER: ${{ steps.decide.outputs.counter }}
+          CUT: ${{ steps.cutoff.outputs.sha }}
+        run: |
+          set -eu
+          TAG="v${NEW_VERSION}-tasker.${COUNTER}"
+          git tag -a "$TAG" -m "Pebble ${NEW_VERSION} + tasker bridge (build ${COUNTER})"
+          git push origin "refs/tags/${TAG}"
+
+          {
+            echo "Upstream release **${NEW_VERSION}** (${{ steps.cutoff.outputs.release_date }}) + the Tasker bridge."
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Upstream cutoff | \`${{ steps.cutoff.outputs.short }}\` at position ${{ steps.cutoff.outputs.position }} |"
+            echo "| Upstream HEAD | \`${{ steps.upstream.outputs.short }}\` at position ${{ steps.cutoff.outputs.head_position }} |"
+            echo "| Unreleased drift | ${{ steps.cutoff.outputs.drift }} commits |"
+            echo "| Cutoff method | \`${{ steps.cutoff.outputs.method }}\` (${{ steps.cutoff.outputs.items_matched }}/${{ steps.cutoff.outputs.items_total }} changelog items matched) |"
+            echo "| Merge | \`${{ steps.merge.outputs.resolved_by || 'gemini' }}\` |"
+            echo
+            echo "> ⏳ Build in progress — the APK is attached when it passes. If the"
+            echo "> build fails this release is deleted (the tag is kept)."
+          } > /tmp/release-notes.md
+
+          gh release create "$TAG" --title "$TAG" --notes-file /tmp/release-notes.md
+
+          # Emit the tag output LAST. `finalize` keys off `tag != ''` with always(), and reads a
+          # skipped `build` job as a build failure — so publishing the tag before the release
+          # actually exists would make any failure in this step delete a release and burn a strike
+          # for a build that never ran.
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      # =======================================================================
+      # FAILURE PATH — undo the merge and roll the ledger back to the previous
+      # version, so the next tick retries this same version from scratch.
+      # =======================================================================
+      # The revert below is a `git reset --hard`, which also throws away the
+      # rr-cache commit "Verify resolution" made — on this ephemeral runner that
+      # loses every resolution rerere/Gemini just recorded, and MERGE-FAIL tells
+      # the operator to commit exactly those. Stage them as an artifact first.
+      - name: Preserve rerere cache on merge failure
+        if: >-
+          failure()
+          && steps.decide.outputs.proceed == 'true'
+          && steps.merge.outputs.conflicted == 'true'
+        continue-on-error: true
+        run: |
+          mkdir -p tools/pipeline/rr-cache
+          cp -R .git/rr-cache/. tools/pipeline/rr-cache/ 2>/dev/null || true
+
+      - name: Upload rerere cache on merge failure
+        if: >-
+          failure()
+          && steps.decide.outputs.proceed == 'true'
+          && steps.merge.outputs.conflicted == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: rerere-cache-${{ steps.decide.outputs.counter }}
+          path: tools/pipeline/rr-cache/**
+          if-no-files-found: ignore
+
+      - name: Revert merge + roll back ledger
+        if: >-
+          failure()
+          && steps.decide.outputs.proceed == 'true'
+          && steps.attempt.outcome == 'success'
+        env:
+          PRE: ${{ steps.merge.outputs.pre_merge }}
+          MERGED: ${{ steps.push.outputs.merged_sha }}
+          FAILED_VERSION: ${{ steps.cutoff.outputs.changelog_version }}
+        run: |
+          set -eu
+          git merge --abort 2>/dev/null || true
+          if [ -n "${PRE:-}" ]; then
+            git reset --hard "$PRE"
+            # If the merge had already been pushed, put the remote back too. The
+            # lease makes this a no-op unless the remote is exactly what we pushed.
+            if [ -n "${MERGED:-}" ]; then
+              git push --force-with-lease="refs/heads/${TASKER_BRANCH}:${MERGED}" \
+                origin "${PRE}:refs/heads/${TASKER_BRANCH}" || true
+            fi
+          fi
+
+          python3 - <<'PY'
+          import json, os, pathlib
+          from datetime import datetime, timezone
+          p = pathlib.Path(".state") / os.environ["STATE_FILE"]
+          s = json.loads(p.read_text()) if p.exists() else {}
+          prev = s.pop("previous", {}) or {}
+          # Roll the ledger back to the version that was there before this run.
+          s["last_synced_version"] = prev.get("last_synced_version") or ""
+          s["last_synced_cutoff"] = prev.get("last_synced_cutoff") or ""
+          s["last_synced_tasker"] = prev.get("last_synced_tasker") or ""
+          s["status"] = "merge-failed"
+          s["last_merge_failure"] = {
+              "version": os.environ.get("FAILED_VERSION", ""),
+              "run_url": os.environ.get("RUN_URL", ""),
+              "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+          }
+          s["updated_at"] = s["last_merge_failure"]["at"]
+          p.write_text(json.dumps(s, indent=2, sort_keys=True) + "\n")
+          PY
+          cd .state
+          git add "$STATE_FILE"
+          git -c user.name="pipeline-bot" -c user.email="pipeline-bot@users.noreply.github.com" \
+              commit -m "pipeline: roll back to ${{ steps.ledger.outputs.last_version }} (sync to ${{ steps.cutoff.outputs.changelog_version }} failed)" --allow-empty
+          git push origin "HEAD:refs/heads/${STATE_BRANCH}" || {
+            git fetch --no-tags origin "$STATE_BRANCH"
+            git rebase FETCH_HEAD
+            git push origin "HEAD:refs/heads/${STATE_BRANCH}"
+          }
+        continue-on-error: true
+
+      - name: Open MERGE FAIL issue
+        if: >-
+          failure()
+          && steps.decide.outputs.proceed == 'true'
+          && (steps.merge.outcome == 'failure' || steps.ai.outcome == 'failure'
+              || steps.verify.outcome == 'failure' || steps.tapcheck.outcome == 'failure')
+        env:
+          FAILED_VERSION: ${{ steps.cutoff.outputs.changelog_version }}
+        run: |
+          set -eu
+          {
+            echo "**Sync to \`$FAILED_VERSION\` could not be merged — the merge was reverted and the ledger rolled back to \`${{ steps.ledger.outputs.last_version }}\`.**"
+            echo
+            echo "- Cutoff: \`${{ steps.cutoff.outputs.sha }}\` (position ${{ steps.cutoff.outputs.position }}, drift ${{ steps.cutoff.outputs.drift }})"
+            echo "- rerere replay: \`${{ steps.merge.outputs.resolved_by || 'did not resolve everything' }}\`"
+            echo "- Gemini step: \`${{ steps.ai.outcome }}\` / verification: \`${{ steps.verify.outcome }}\` / tap-check: \`${{ steps.tapcheck.outcome }}\`"
+            echo "- Run: $RUN_URL"
+            echo
+            echo "The next tick will retry this same version. Before resolving by hand,"
+            echo "it is worth one retry on a stronger model:"
+            echo
+            echo '```sh'
+            echo "gh workflow run fork-sync.yml -f model=gemini-3.1-pro-preview"
+            echo '```'
+            echo
+            echo "Otherwise resolve by hand per \`docs/runbooks/conflict-resolution.md\`"
+            echo "and commit the resulting \`tools/pipeline/rr-cache\` entries, so the"
+            echo "replay tier handles this conflict without any model next time."
+            echo
+            echo "Whatever rerere recorded on the runner before the revert is attached to this run"
+            echo "as the \`rerere-cache-*\` artifact — download and commit it rather than"
+            echo "re-resolving from scratch."
+            if [ -s /tmp/pipeline-gemini.log ]; then
+              echo
+              echo "### Gemini transcript (tail)"
+              echo '```'
+              tail -n 80 /tmp/pipeline-gemini.log
+              echo '```'
+            fi
+          } > /tmp/pipeline-merge-fail.md
+          sh tools/pipeline/lib/issue.sh MERGE-FAIL \
+            "Merge of upstream release $FAILED_VERSION failed" \
+            /tmp/pipeline-merge-fail.md
+
+      - name: Open RESOLVE FAIL issue
+        if: failure() && steps.cutoff.outcome == 'failure'
+        run: |
+          set -eu
+          {
+            echo "**fork-sync could not resolve the released cutoff.** Nothing was changed."
+            echo
+            echo "- Upstream HEAD: \`${{ steps.upstream.outputs.sha }}\`"
+            echo "- Run: $RUN_URL"
+            echo
+            echo "### Resolver log"
+            echo '```'
+            tail -n 60 /tmp/pipeline-cutoff.log 2>/dev/null || echo "(no log captured)"
+            echo '```'
+          } > /tmp/pipeline-resolve-fail.md
+          sh tools/pipeline/lib/issue.sh RESOLVE-FAIL \
+            "Release-cutoff resolution failed (store / changelog / fuzzy match)" \
+            /tmp/pipeline-resolve-fail.md
+
+      - name: Open generic pipeline-failure issue
+        # Catch-all for the steps that have no issue of their own (ledger load,
+        # attempt record, ref pushes, tag/release creation) so a red run is never
+        # silent. Excludes the steps that already file a specific issue.
+        if: >-
+          failure()
+          && steps.cutoff.outcome != 'failure'
+          && steps.merge.outcome != 'failure'
+          && steps.ai.outcome != 'failure'
+          && steps.verify.outcome != 'failure'
+          && steps.tapcheck.outcome != 'failure'
+        run: |
+          sh tools/pipeline/lib/issue.sh PIPELINE-FAIL \
+            "fork-sync failed in an unguarded step (see the run log)"
+
+      - name: Summary
+        if: always() && steps.cutoff.outcome == 'success'
+        run: |
+          {
+            echo "## fork-sync"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Changelog version | \`${{ steps.cutoff.outputs.changelog_version }}\` (store \`${{ steps.cutoff.outputs.store_version }}\`, released ${{ steps.cutoff.outputs.release_date }}) |"
+            echo "| Previously synced | \`${{ steps.ledger.outputs.last_version || 'none' }}\` |"
+            echo "| Cutoff | \`${{ steps.cutoff.outputs.short }}\` at position ${{ steps.cutoff.outputs.position }} of ${{ steps.cutoff.outputs.head_position }} (drift ${{ steps.cutoff.outputs.drift }}) |"
+            echo "| Method | \`${{ steps.cutoff.outputs.method }}\` — ${{ steps.cutoff.outputs.items_matched }}/${{ steps.cutoff.outputs.items_total }} items matched |"
+            echo "| Action | ${{ steps.decide.outputs.proceed == 'true' && 'sync' || 'up to date — no action' }} |"
+            echo "| Merge | ${{ steps.merge.outputs.resolved_by || (steps.merge.outputs.conflicted == 'true' && 'gemini' || 'n/a') }} |"
+            echo "| Strikes | ${{ steps.ledger.outputs.strike_count }} (${{ steps.ledger.outputs.strikes || 'none' }}) |"
+            echo "| Tag | \`${{ steps.release.outputs.tag || 'n/a' }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ===========================================================================
+  # BUILD — our own android-only workflow. Never upstream's build.yml: that one
+  # is debug + lint with an iOS job, and upstream can overwrite it in any merge.
+  # ===========================================================================
+  build:
+    needs: sync
+    if: needs.sync.outputs.proceed == 'true' && needs.sync.outputs.tag != ''
+    uses: ./.github/workflows/android-release.yml
+    with:
+      ref: ${{ needs.sync.outputs.tag }}
+      version_name: ${{ needs.sync.outputs.version }}
+      commit_hash: ${{ needs.sync.outputs.cutoff_short }}
+      build_counter: ${{ needs.sync.outputs.counter }}
+      run_tests: true
+    secrets: inherit
+
+  # ===========================================================================
+  # FINALIZE — attach or delete, then move the ledger.
+  #   build ok -> APK + .sha256 onto the release, strikes cleared
+  #   build KO -> release deleted, TAG KEPT, version struck. 3 strikes and this
+  #               workflow disables itself.
+  # ===========================================================================
+  finalize:
+    needs: [sync, build]
+    if: always() && needs.sync.outputs.proceed == 'true' && needs.sync.outputs.tag != ''
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.sync.outputs.tag }}
+      VERSION: ${{ needs.sync.outputs.version }}
+      BUILD_RESULT: ${{ needs.build.result }}
+    steps:
+      - name: Check out tasker (helpers only)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TASKER_BRANCH }}
+          fetch-depth: 1
+
+      - name: Load ledger
+        run: |
+          set -eu
+          if git ls-remote --exit-code --heads origin "$STATE_BRANCH" >/dev/null 2>&1; then
+            git fetch --no-tags --depth 1 origin "$STATE_BRANCH"
+            git worktree add --force --detach .state FETCH_HEAD
+          else
+            git worktree add --force --detach .state
+            ( cd .state && git checkout --orphan "$STATE_BRANCH" && git rm -rf . >/dev/null 2>&1 || true )
+          fi
+          mkdir -p ".state/$(dirname "$STATE_FILE")"
+
+      # --- SUCCESS: publish the artifact onto the release. -------------------
+      - name: Download signed APK
+        if: needs.build.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: dist
+
+      - name: Attach APK to the release
+        if: needs.build.result == 'success'
+        run: |
+          set -eu
+          gh release upload "$TAG" dist/* --clobber
+          # Read the existing body FIRST and bail out of the rewrite if that read failed — piping it
+          # straight into the new notes would silently replace the cutoff/method/drift table with
+          # just the Download stanza whenever `gh release view` hiccups.
+          if ! gh release view "$TAG" --json body --jq .body > /tmp/body.md; then
+            echo "::warning title=Release notes not updated::could not read the existing body for $TAG"
+            exit 0
+          fi
+          {
+            sed '/⏳ Build in progress/,$d' /tmp/body.md
+            echo "### Download"
+            echo
+            echo "\`${{ needs.build.outputs.apk_name }}\` — versionCode \`${{ needs.build.outputs.version_code }}\`."
+            echo "Verify with the \`.sha256\` sidecar; Obtainium tracks this repo's releases by versionCode."
+          } > /tmp/notes.md
+          gh release edit "$TAG" --notes-file /tmp/notes.md
+
+      # --- FAILURE: delete the release, keep the tag, count the strike. ------
+      - name: Delete the release (keep the tag)
+        if: needs.build.result != 'success'
+        run: |
+          set -eu
+          # --cleanup-tag is deliberately NOT passed: the spec keeps the tag so
+          # the failed point stays addressable and the next build gets a fresh
+          # counter rather than reusing this one.
+          gh release delete "$TAG" --yes || echo "release $TAG already gone"
+          echo "::warning title=Build failed::release $TAG deleted; tag kept"
+
+      # --- Move the ledger either way. ---------------------------------------
+      - name: Update ledger
+        id: ledger
+        run: |
+          set -eu
+          BUILD_RESULT="$BUILD_RESULT" VERSION="$VERSION" TAG="$TAG" RUN_URL="$RUN_URL" \
+          COUNTER="${{ needs.sync.outputs.counter }}" \
+          MERGED="${{ needs.sync.outputs.merged_sha }}" \
+          python3 - >> "$GITHUB_OUTPUT" <<'PY'
+          import json, os, pathlib
+          from datetime import datetime, timezone
+          p = pathlib.Path(".state") / os.environ["STATE_FILE"]
+          s = json.loads(p.read_text()) if p.exists() else {}
+          v, ok = os.environ["VERSION"], os.environ["BUILD_RESULT"] == "success"
+          s.setdefault("build_counters", {})[v] = int(os.environ["COUNTER"])
+          s["last_synced_tasker"] = os.environ["MERGED"]
+          strikes = s.get("build_strikes", [])
+          if ok:
+              s["status"] = "built"
+              s["last_built_version"] = v
+              s["last_built_tag"] = os.environ["TAG"]
+              s.pop("previous", None)           # nothing left to roll back to
+              strikes = []                      # a green build clears the slate
+          else:
+              # The merge STAYS (spec: "leave it as-is"); only the build is struck,
+              # and only once per version however many times it is retried.
+              s["status"] = "build-failed"
+              if v not in strikes:
+                  strikes.append(v)
+          s["build_strikes"] = strikes
+          s["run_url"] = os.environ["RUN_URL"]
+          s["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+          p.write_text(json.dumps(s, indent=2, sort_keys=True) + "\n")
+          print("strike_count=" + str(len(strikes)))
+          print("strikes=" + ",".join(strikes))
+          PY
+          cd .state
+          git add "$STATE_FILE"
+          git -c user.name="pipeline-bot" -c user.email="pipeline-bot@users.noreply.github.com" \
+              commit -m "pipeline: $VERSION build $BUILD_RESULT ($TAG)" --allow-empty
+          git push origin "HEAD:refs/heads/${STATE_BRANCH}" || {
+            git fetch --no-tags origin "$STATE_BRANCH"
+            git rebase FETCH_HEAD
+            git push origin "HEAD:refs/heads/${STATE_BRANCH}"
+          }
+
+      # --- THREE STRIKES: stop the line. -------------------------------------
+      # `|| '0'` matters: if "Update ledger" failed, strike_count is the empty string, and BOTH
+      # `'' >= 3` and `'' < 3` evaluate false (NaN) — a build failure would be reported nowhere.
+      - name: Three failed versions — disable the pipeline
+        if: needs.build.result != 'success' && (steps.ledger.outputs.strike_count || '0') >= 3
+        run: |
+          set -eu
+          {
+            echo "## 🔴 Pipeline disabled after 3 consecutive versions failed to build"
+            echo
+            echo "Struck versions: \`${{ steps.ledger.outputs.strikes }}\`"
+            echo
+            echo "Each of these merged cleanly but failed \`android-release.yml\`, so the"
+            echo "fork is now three upstream releases behind a shippable build. This is"
+            echo "no longer a transient failure — something in the patch set or the"
+            echo "build config needs a human."
+            echo
+            echo "- Latest failing tag (kept, release deleted): \`$TAG\`"
+            echo "- Run: $RUN_URL"
+            echo
+            echo "### Restarting the pipeline"
+            echo
+            echo '```sh'
+            echo "gh workflow enable fork-sync.yml"
+            echo "gh workflow run fork-sync.yml -f reset_strikes=true -f force=true"
+            echo '```'
+            echo
+            echo "Fix the build first — re-enabling without a fix just re-strikes."
+          } > /tmp/pipeline-critical.md
+          sh tools/pipeline/lib/issue.sh CRITICAL-BUILD \
+            "CRITICAL: 3 versions failed to build — fork-sync disabled" \
+            /tmp/pipeline-critical.md
+          gh workflow disable fork-sync.yml
+          echo "::error title=fork-sync disabled::3 versions failed to build; workflow disabled"
+          exit 1
+
+      - name: Open BUILD FAIL issue
+        if: needs.build.result != 'success' && (steps.ledger.outputs.strike_count || '0') < 3
+        run: |
+          set -eu
+          {
+            echo "**\`$VERSION\` merged fine but failed to build.** Per the pipeline's rules the"
+            echo "merge is KEPT — the ledger stays at \`$VERSION\` and this version will not be"
+            echo "retried automatically; the next NEW upstream version will be."
+            echo
+            echo "- Tag \`$TAG\` kept; its GitHub release was deleted."
+            echo "- Strikes: **${{ steps.ledger.outputs.strike_count }}/3** (\`${{ steps.ledger.outputs.strikes }}\`)"
+            echo "- Run: $RUN_URL"
+            echo
+            echo "Retry this version after fixing:"
+            echo '```sh'
+            echo "gh workflow run fork-sync.yml -f force=true"
+            echo '```'
+          } > /tmp/pipeline-build-fail.md
+          sh tools/pipeline/lib/issue.sh BUILD-FAIL \
+            "Build failed for $VERSION (strike ${{ steps.ledger.outputs.strike_count }}/3)" \
+            /tmp/pipeline-build-fail.md
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## fork-sync — $VERSION"
+            echo
+            echo "- Build: \`$BUILD_RESULT\`"
+            echo "- Tag: \`$TAG\` $([ "$BUILD_RESULT" = "success" ] && echo "(release published)" || echo "(release deleted, tag kept)")"
+            echo "- Strikes: ${{ steps.ledger.outputs.strike_count }}/3"
+          } >> "$GITHUB_STEP_SUMMARY"

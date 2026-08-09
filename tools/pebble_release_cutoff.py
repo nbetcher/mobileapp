@@ -97,7 +97,7 @@ def changelog(verbose=False):
     if verbose:
         print(f"[changelog] {len(table_ids)} tables on page", file=sys.stderr)
 
-    out, seen = [], {}
+    seen = {}
     for tid in table_ids:
         blocks = _notion_chunk(tid).get("recordMap", {}).get("block", {})
         # preserve table order via the table block's content list when present
@@ -109,10 +109,11 @@ def changelog(verbose=False):
             cells = [_plain(p).strip() for p in (_val(b).get("properties") or {}).values()]
             ver = date = notes = None
             for c in cells:
+                parsed = _parse_date(c)
                 if VERSION_RE.fullmatch(c):
                     ver = c
-                elif _parse_date(c):
-                    date = _parse_date(c)
+                elif parsed:
+                    date = parsed
                 elif len(c) > 20:
                     notes = c
             if ver and date and notes:
@@ -221,8 +222,12 @@ def cutoff(repo, branch, entry, verbose=False, threshold=0.55):
         tip = max(matches, key=lambda m: pos[m["sha"]])
         return tip["sha"], "item-match", matches, pos[tip["sha"]]
 
-    # fallback: newest commit AUTHORED on/before the release date
-    log_all = git(repo, "log", branch, "--format=%H %aI")
+    # fallback: newest commit AUTHORED on/before the release date.
+    # --topo-order, NOT git's default: the default walk orders by COMMITTER date, and the whole
+    # premise here is that the internal->public rebase-sync rewrites those. Under --topo-order no
+    # commit is listed before one of its descendants, so the first hit is the highest-positioned
+    # commit satisfying the author-date predicate — which is what "newest" has to mean.
+    log_all = git(repo, "log", branch, "--topo-order", "--format=%H %aI")
     fb = next((h for h, d in (l.split() for l in log_all.splitlines())
                if d[:10] <= f"{rel:%Y-%m-%d}"), None)
     if fb is None:

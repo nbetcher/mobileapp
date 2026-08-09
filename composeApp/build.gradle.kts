@@ -59,12 +59,17 @@ listOf("release", "debug").forEach { bt ->
             val dir = layout.buildDirectory.dir("outputs/apk/$bt").get().asFile
             if (!dir.isDirectory) return@doLast
             val target = dir.resolve("Pebble_$resolvedVersionName-$pebbleCommitHash-$bt.apk")
-            dir.listFiles { f -> f.isFile && f.extension == "apk" }?.forEach { apk ->
-                when {
-                    apk.name == target.name -> Unit
-                    target.exists() -> apk.delete()
-                    else -> apk.renameTo(target)
-                }
+            val apks = dir.listFiles { f -> f.isFile && f.extension == "apk" }?.toList().orEmpty()
+            // Anything that is NOT the target name is what AGP/nanogiants just packaged; a file
+            // already AT the target name is last build's leftover (we renamed AGP's output away, so
+            // the packaging task re-emits it every run). Drop the stale target FIRST — deleting the
+            // fresh APK instead would silently republish the previous build on every rebuild.
+            val fresh = apks.filter { it.name != target.name }
+            if (fresh.isNotEmpty()) {
+                target.delete()
+                val keep = fresh.maxByOrNull { it.lastModified() }!!
+                fresh.forEach { if (it != keep) it.delete() }
+                keep.renameTo(target)
             }
         }
     }
