@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.sp
 import co.touchlab.kermit.Logger
 import coredevices.pebble.Platform
 import coredevices.pebble.services.AppStoreHomeResult
+import coredevices.pebble.services.LanguagePackRepository
 import coredevices.pebble.services.PebbleWebServices
 import coredevices.pebble.services.StoreOnboarding
 import coredevices.pebble.ui.CommonAppType
@@ -92,7 +93,9 @@ import io.rebble.libpebblecommon.connection.endpointmanager.LanguagePackInstallS
 import io.rebble.libpebblecommon.connection.endpointmanager.installing
 import io.rebble.libpebblecommon.database.entity.BoolWatchPref
 import io.rebble.libpebblecommon.locker.AppType
+import io.rebble.libpebblecommon.metadata.WatchHardwarePlatform
 import io.rebble.libpebblecommon.metadata.WatchType
+import io.rebble.libpebblecommon.metadata.supportsHrm
 import io.rebble.libpebblecommon.packets.ProtocolCapsFlag
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
@@ -243,7 +246,8 @@ fun WatchOnboardingScreen(
                             snackbarDisplay = snackbarDisplay,
                         )
 
-                        val languagePackInstalled = connectedWatch.languagePackInstalled()
+                        val languagePackRepository: LanguagePackRepository = koinInject()
+                        val languagePackInstalled = connectedWatch.languagePackInstalled(languagePackRepository)
                         val installingLanguagePack =
                             connectedWatch.languagePackInstallState.installing()
                         SectionText("Install a language pack")
@@ -287,9 +291,11 @@ fun WatchOnboardingScreen(
 
                             settings.Show(BoolWatchPref.Clock24h.id)
                             settings.Show(EnableHealthTracking)
-                            settings.Show(HrmEnabled)
-                            settings.Show(HrmMeasurementInterval)
-                            settings.Show(HrmActivityTracking)
+                            if (connectedWatch.color?.supportsHrm() == true) {
+                                settings.Show(HrmEnabled)
+                                settings.Show(HrmMeasurementInterval)
+                                settings.Show(HrmActivityTracking)
+                            }
                             settings.Show(EnableActivityInsights)
                             settings.Show(EnableSleepInsights)
                             settings.Show(HealthImperialUnits)

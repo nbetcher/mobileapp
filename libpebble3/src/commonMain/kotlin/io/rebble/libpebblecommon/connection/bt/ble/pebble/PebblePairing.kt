@@ -19,12 +19,11 @@ import io.rebble.libpebblecommon.connection.bt.createBondClassic
 import io.rebble.libpebblecommon.connection.bt.getBluetoothClassicDevicePairEvents
 import io.rebble.libpebblecommon.connection.bt.getBluetoothDevicePairEvents
 import io.rebble.libpebblecommon.di.ConnectionAnalyticsLogger
+import io.rebble.libpebblecommon.di.ConnectionCoroutineScope
 import io.rebble.libpebblecommon.di.ConnectionScopeProperties
 import io.rebble.libpebblecommon.metadata.WatchType
 import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.withTimeout
 
@@ -33,12 +32,12 @@ class PebblePairing(
     private val config: BleConfigFlow,
     private val blePlatformConfig: BlePlatformConfig,
     private val scopeProps: ConnectionScopeProperties,
-    private val analytics: ConnectionAnalyticsLogger,
+    private val connectionCoroutineScope: ConnectionCoroutineScope,
 ) {
     suspend fun requestBlePairing(
         device: ConnectedGattClient,
         connectivityRecord: ConnectivityStatus,
-        connectivity: Flow<ConnectivityStatus>,
+        connectivityWatcher: ConnectivityWatcher,
         identifier: PebbleBleIdentifier,
     ): ConnectionFailureReason? {
         val needsPairingTrigger = scopeProps.color.platform.needsPairingTrigger() || !blePlatformConfig.phoneRequestsPairing
@@ -51,7 +50,7 @@ class PebblePairing(
         }
         check(pairingTriggerCharacteristic != null) { "Pairing trigger characteristic not found" }
 
-        val bondState = getBluetoothDevicePairEvents(context, identifier, connectivity)
+        val bondState = getBluetoothDevicePairEvents(context, identifier, connectivityWatcher, connectionCoroutineScope)
         var needsExplicitBond = true
         val bleConfig = config.value
 
@@ -67,7 +66,7 @@ class PebblePairing(
                 val pairValue = makePairingTriggerValue(
                     noSecurityRequest = needsExplicitBond,
                     autoAcceptFuturePairing = false,
-                    watchAsGattServer = bleConfig.reversedPPoG,
+                    watchAsGattServer = bleConfig.legacyReversedPPoG,
                     pinAddress = blePlatformConfig.pinAddress,
                 )
                 val writeRes = device.writeCharacteristic(

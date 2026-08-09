@@ -102,16 +102,24 @@ class RecordingRepository(
     fun getPaginatedFeedItems() =
         localRecordingDao.getPaginatedFeedItems()
 
+    /** Each recording's latest tool-call semantic result. Lets the home feed label
+     *  actions that don't produce a feed item, e.g. calendar events. */
+    fun getLatestToolSemanticResults() =
+        db.conversationMessageDao().getLatestToolSemanticResults()
+
     suspend fun getAllFirestoreIds(): Set<String> =
         localRecordingDao.getAllFirestoreIds().toHashSet()
 
     suspend fun deleteAllLocalRecordings() =
         localRecordingDao.deleteAll()
 
-    suspend fun createFailedRecordingEntry(recordingId: Long, errorMessage: String) =
+    /** [fileName] keeps the failed entry linked to its local audio file so
+     *  the user can still listen to / export the recording. */
+    suspend fun createFailedRecordingEntry(recordingId: Long, errorMessage: String, fileName: String?) =
         recordingEntryDao.insertRecordingEntry(
             RecordingEntryEntity(
                 recordingId = recordingId,
+                fileName = fileName,
                 status = RecordingEntryStatus.agent_error,
                 transcription = "Error: $errorMessage",
                 error = errorMessage

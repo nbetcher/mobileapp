@@ -7,11 +7,14 @@ import co.touchlab.kermit.Logger
 import coredevices.indexai.data.entity.ConversationMessageEntity
 import coredevices.indexai.data.entity.RecordingDocument
 import coredevices.indexai.data.entity.RecordingEntryEntity
+import coredevices.indexai.data.entity.mcp_sandbox.SandboxModelType
 import coredevices.indexai.database.dao.ConversationMessageDao
 import coredevices.indexai.database.dao.RecordingEntryDao
 import coredevices.libindex.device.IndexDeviceManager
 import coredevices.libindex.device.InterviewedIndexDevice
 import coredevices.libindex.device.KnownIndexDevice
+import coredevices.libindex.di.LibIndexCoroutineScope
+import coredevices.ring.agent.LlmMode
 import coredevices.ring.agent.builtin_servlets.notes.NoteIntegrationFactory
 import coredevices.ring.agent.builtin_servlets.notes.NoteProvider
 import coredevices.ring.agent.builtin_servlets.reminders.ReminderProvider
@@ -55,7 +58,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapNotNull
@@ -104,6 +106,7 @@ class SettingsViewModel(
     private val mcpSandboxRepository: McpSandboxRepository,
     private val ringDelegate: RingDelegate,
     private val cactusModelProvider: CactusModelProvider,
+    private val appScope: LibIndexCoroutineScope,
 ): ViewModel() {
     val version = CommonBuildKonfig.GIT_HASH
     val username = Firebase.auth.authStateChanged
@@ -112,8 +115,19 @@ class SettingsViewModel(
     val userId = Firebase.auth.authStateChanged
         .map { it?.uid }
         .stateIn(viewModelScope, SharingStarted.Lazily, Firebase.auth.currentUser?.uid)
-    private val _useCactusAgent = MutableStateFlow(false)
-    val useCactusAgent = _useCactusAgent.asStateFlow()
+    val llmMode = preferences.llmMode
+    private val _showLlmModeDialog = MutableStateFlow(false)
+    val showLlmModeDialog = _showLlmModeDialog.asStateFlow()
+
+    /** The on-device agent can't drive a sandbox group's model, so the local LLM modes are
+     *  only offered while the default group runs the Index Agent. */
+    val localLlmSupported = mcpSandboxRepository.getDefaultGroupFlow()
+        .map { it?.modelType == SandboxModelType.IndexAgent }
+        .stateIn(
+            viewModelScope,
+            started = SharingStarted.Lazily,
+            initialValue = preferences.llmMode.value.usesLocalCactus()
+        )
     private val _showModelDownloadDialog = MutableStateFlow<ModelType?>(null)
     val showModelDownloadDialog = _showModelDownloadDialog.asStateFlow()
     private val _showMusicControlDialog = MutableStateFlow(false)
@@ -134,6 +148,7 @@ class SettingsViewModel(
     private val _showNoteShortcutDialog = MutableStateFlow(false)
     val showNoteShortcutDialog = _showNoteShortcutDialog.asStateFlow()
     val noteShortcut = preferences.noteShortcut
+    val autoDismissActionNotifications = preferences.autoDismissActionNotifications
     private val currentRing = indexDeviceManager.rings.map {
         it.firstOrNull { ring -> ring is KnownIndexDevice }
     }
@@ -162,11 +177,6 @@ class SettingsViewModel(
     val availableReminderProviders = _availableReminderProviders.asStateFlow()
 
     init {
-        viewModelScope.launch {
-            preferences.useCactusAgent.collectLatest { useCactus ->
-                _useCactusAgent.value = useCactus
-            }
-        }
         viewModelScope.launch {
             updateAvailableNoteProviders()
             updateAvailableReminderProviders()
@@ -200,23 +210,30 @@ class SettingsViewModel(
     fun onModelDownloadDialogDismissed(success: Boolean) {
         val wasDownloading = _showModelDownloadDialog.value ?: return
         _showModelDownloadDialog.value = null
-        viewModelScope.launch {
+        // appScope: pref write must land even if the user leaves Settings.
+        appScope.launch {
             when (wasDownloading) {
-                is ModelType.Agent -> preferences.setUseCactusAgent(success)
+                is ModelType.Agent -> if (!success) preferences.setLlmMode(LlmMode.RemoteOnly)
                 is ModelType.STT -> preferences.setUseCactusTranscription(success)
             }
         }
     }
-    
-    fun toggleCactusAgent() {
-        viewModelScope.launch {
-            if (!_useCactusAgent.value) {
+
+    fun showLlmModeDialog() {
+        _showLlmModeDialog.value = true
+    }
+
+    fun closeLlmModeDialog() {
+        _showLlmModeDialog.value = false
+    }
+
+    fun setLlmMode(mode: LlmMode) {
+        appScope.launch {
+            if (mode.usesLocalCactus()) {
                 // Trigger LM model extraction, should be already integrated into assets so no DL
                 cactusModelProvider.getLMModelPath()
-                preferences.setUseCactusAgent(true)
-            } else {
-                preferences.setUseCactusAgent(false)
             }
+            preferences.setLlmMode(mode)
         }
     }
 
@@ -252,6 +269,10 @@ class SettingsViewModel(
             val newValue = !debugDetailsEnabled.value
             preferences.setDebugDetailsEnabled(newValue)
         }
+    }
+
+    fun toggleAutoDismissActionNotifications() {
+        preferences.setAutoDismissActionNotifications(!autoDismissActionNotifications.value)
     }
 
     fun showNoteShortcutDialog() {
@@ -382,13 +403,13 @@ class SettingsViewModel(
      *  the actual throws — we fall through to the legacy paginated
      *  `getCount()` (slow on big collections, but correct). */
     fun loadBackupCount() {
-        viewModelScope.launch {
+        appScope.launch {
             _backupLoading.value = true
             try {
                 val count = withContext(Dispatchers.IO) {
                     firestoreRecordingsDao.getCount()
                 }
-                preferences.setLastBackupCount(count)
+                preferences.setLastBackupCount(count.toInt())
             } catch (e: Exception) {
                 Logger.withTag("Backup").w(e) { "Failed to refresh backup count" }
                 // Don't surface as an error in the UI — the cached value
@@ -400,7 +421,9 @@ class SettingsViewModel(
     }
 
     fun deleteBackup() {
-        viewModelScope.launch {
+        // appScope: a multi-step destructive operation — leaving Settings
+        // mid-way must not abandon it half-done.
+        appScope.launch {
             _backupLoading.value = true
             _backupStatus.value = "Deleting backup..."
             val log = Logger.withTag("Backup")
@@ -466,7 +489,8 @@ class SettingsViewModel(
     }
 
     fun deleteLocalFeed() {
-        viewModelScope.launch {
+        // appScope: same as deleteBackup — must run to completion.
+        appScope.launch {
             _backupLoading.value = true
             _backupStatus.value = "Deleting local feed..."
             val log = Logger.withTag("Backup")
@@ -734,6 +758,27 @@ class SettingsViewModel(
                 }
             } catch (e: Exception) {
                 _encryptionKeyStatus.value = "QR import failed: ${e.message}"
+            } finally {
+                _encryptionKeyLoading.value = false
+            }
+        }
+    }
+
+    /** Settings-list manual key entry, reporting through [encryptionKeyStatus]. */
+    fun importKeyFromText(keyBase64: String) {
+        val key = keyBase64.trim()
+        if (key.isEmpty()) return
+        viewModelScope.launch {
+            _encryptionKeyLoading.value = true
+            try {
+                _encryptionKeyStatus.value =
+                    if (encryptionManager.restoreKeyFromString(key)) {
+                        "Key imported from text"
+                    } else {
+                        "That key isn't valid for this account"
+                    }
+            } catch (e: Exception) {
+                _encryptionKeyStatus.value = "Key import failed: ${e.message}"
             } finally {
                 _encryptionKeyLoading.value = false
             }

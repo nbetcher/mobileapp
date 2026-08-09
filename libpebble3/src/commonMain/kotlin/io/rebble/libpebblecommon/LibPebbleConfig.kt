@@ -8,6 +8,7 @@ import io.rebble.libpebblecommon.metadata.WatchType
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
@@ -63,9 +64,14 @@ data class WatchConfig(
     val calendarPins: Boolean = true,
     val calendarReminders: Boolean = true,
     val calendarShowDeclinedEvents: Boolean = false,
+    /**
+     * Name of the vibe pattern used for every calendar reminder; the watch's own default when null.
+     */
+    val overrideCalendarVibePattern: String? = null,
     val ignoreMissingPrf: Boolean = false,
     val lanDevConnection: Boolean = false,
     val verboseWatchManagerLogging: Boolean = false,
+    val autoResumeFirmwareUpdate: Boolean = true,
     val pkjsInspectable: Boolean = false,
     val emulateRemoteTimeline: Boolean = true,
     /**
@@ -101,13 +107,35 @@ fun WatchConfig.asFlow() = WatchConfigFlow(MutableStateFlow(LibPebbleConfig(watc
 
 @Serializable
 data class BleConfig(
-    val reversedPPoG: Boolean = false,
+    @SerialName("reversedPpog")
+    val legacyReversedPPoG: Boolean = false,
+    /**
+     * When false, ignore any reversed PPoG service the watch advertises and host forward PPoG
+     * ourselves instead. Evaluated per connection, so it takes effect on the next reconnect.
+     */
+    val useReversedPpogV2: Boolean = false,
     val verbosePpogLogging: Boolean = false,
     /**
      * iOS only. When true, re-publish the GATT services automatically after the BT stack
      * returns to PoweredOn following a state restoration.
      */
     val republishGattServicesOnRestore: Boolean = false,
+    /**
+     * Android only. After a failed connection attempt, use GATT autoConnect for subsequent
+     * attempts, so that the OS waits for the watch to appear instead of us retrying in a loop.
+     */
+    val autoConnectAfterFailure: Boolean = true,
+    /**
+     * iOS only. Opt the watch connection into CoreBluetooth state preservation/restoration so the
+     * OS can relaunch us for central-side events. Applied once during
+     * [io.rebble.libpebblecommon.connection.LibPebble3.create], because Kable's central manager can
+     * only be configured before first use — changing it takes effect on the next app launch.
+     *
+     * Also suppresses the system "Bluetooth is off" alert: Kable sets
+     * CBCentralManagerOptionShowPowerAlertKey=false whenever it passes options at all.
+     */
+    val centralStateRestoration: Boolean = false,
+    val filterScanResultsByUuid: Boolean = true,
 )
 
 class BleConfigFlow(val flow: StateFlow<LibPebbleConfig>) {

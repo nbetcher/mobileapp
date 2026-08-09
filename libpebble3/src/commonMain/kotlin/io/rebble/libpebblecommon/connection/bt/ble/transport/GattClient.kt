@@ -1,25 +1,9 @@
 package io.rebble.libpebblecommon.connection.bt.ble.transport
 
-import com.juul.kable.State
-import io.rebble.libpebblecommon.connection.AppContext
 import io.rebble.libpebblecommon.connection.ConnectionFailureReason
-import io.rebble.libpebblecommon.connection.PebbleBleIdentifier
-import io.rebble.libpebblecommon.connection.bt.ble.transport.impl.kableGattConnector
-import io.rebble.libpebblecommon.di.ConnectionCoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.flow.Flow
 import kotlin.uuid.Uuid
-
-//expect fun libpebbleGattConnector(scannedPebbleDevice: ScannedPebbleDevice, appContext: AppContext): GattConnector
-
-fun gattConnector(
-    identifier: PebbleBleIdentifier,
-    name: String,
-    appContext: AppContext,
-    scope: ConnectionCoroutineScope,
-): GattConnector?
-// = libpebbleGattConnector(scannedPebbleDevice, appContext)
-        = kableGattConnector(identifier = identifier, scope = scope, name = name)
 
 sealed class GattConnectionResult {
     data class Success(val client: ConnectedGattClient) : GattConnectionResult()
@@ -41,7 +25,8 @@ interface ConnectedGattClient : AutoCloseable {
     suspend fun discoverServices(): Boolean
     fun subscribeToCharacteristic(
         serviceUuid: Uuid,
-        characteristicUuid: Uuid
+        characteristicUuid: Uuid,
+        onSubscription: (suspend () -> Unit)? = null,
     ): Flow<ByteArray>?
 
     suspend fun isBonded(): Boolean // TODO doesn't belong in here
@@ -56,4 +41,5 @@ interface ConnectedGattClient : AutoCloseable {
     val services: List<GattService>?
     suspend fun requestMtu(mtu: Int): Int
     suspend fun getMtu(): Int
+    suspend fun refreshServicesNative(): Boolean
 }

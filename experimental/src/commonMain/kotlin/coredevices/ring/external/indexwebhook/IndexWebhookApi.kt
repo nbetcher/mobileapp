@@ -9,7 +9,7 @@ import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
-import io.ktor.http.contentType
+import io.ktor.http.content.ByteArrayContent
 import io.ktor.http.isSuccess
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,6 +30,7 @@ interface IndexWebhookApi {
      * @param recordingId Unique identifier for the recording (used in filename)
      * @param transcription Transcription text. Null when RecordingOnly mode.
      * @param recordedAt When the recording was actually made
+     * @param trigger Button gesture that started the recording
      */
     fun uploadIfEnabled(
         samples: ShortArray?,
@@ -37,8 +38,14 @@ interface IndexWebhookApi {
         recordingId: String,
         transcription: String?,
         recordedAt: Instant,
+        trigger: IndexWebhookRecordingTrigger?,
     )
     val isEnabled: StateFlow<Boolean>
+}
+
+enum class IndexWebhookRecordingTrigger(val headerValue: String) {
+    SingleClickHold("single-click-hold"),
+    DoubleClickHold("double-click-hold"),
 }
 
 /**
@@ -56,6 +63,7 @@ class IndexWebhookApiImpl(
     companion object {
         private val logger = Logger.withTag("IndexWebhookApi")
         private const val AUDIO_SIZE_HEADER = "X-Audio-Size"
+        private const val TRIGGER_HEADER = "X-Index-Trigger"
     }
 
     private val _isEnabled = MutableStateFlow(false)
@@ -77,6 +85,7 @@ class IndexWebhookApiImpl(
         recordingId: String,
         transcription: String?,
         recordedAt: Instant,
+        trigger: IndexWebhookRecordingTrigger?,
     ) {
         val url = webhookPreferences.webhookUrl.value
         if (url.isNullOrBlank()) return
@@ -107,7 +116,8 @@ class IndexWebhookApiImpl(
                     audioData = m4aData,
                     filename = "$recordingId.m4a",
                     transcription = transcriptionToSend,
-                    recordedAt = recordedAt
+                    recordedAt = recordedAt,
+                    trigger = trigger,
                 )
 
                 result.fold(
@@ -126,7 +136,8 @@ class IndexWebhookApiImpl(
         audioData: ByteArray?,
         filename: String,
         transcription: String?,
-        recordedAt: Instant
+        recordedAt: Instant,
+        trigger: IndexWebhookRecordingTrigger?,
     ): Result<Unit> {
         return try {
             val boundary = Uuid.random().toString()
@@ -142,12 +153,17 @@ class IndexWebhookApiImpl(
             )
 
             val response = client.post(url) {
-                contentType(ContentType.parse("multipart/form-data; boundary=$boundary"))
-                headers.forEach { (name, value) -> header(name, value) }
+                headers
+                    .filterKeys { !it.equals(TRIGGER_HEADER, ignoreCase = true) }
+                    .forEach { (name, value) -> header(name, value) }
+                trigger?.let { header(TRIGGER_HEADER, it.headerValue) }
                 if (audioData != null) {
                     header(AUDIO_SIZE_HEADER, audioData.size.toString())
                 }
-                setBody(bodyBytes)
+                setBody(ByteArrayContent(
+                    bytes = bodyBytes,
+                    contentType = ContentType.parse("multipart/form-data; boundary=$boundary"),
+                ))
             }
 
             if (response.status.isSuccess()) {

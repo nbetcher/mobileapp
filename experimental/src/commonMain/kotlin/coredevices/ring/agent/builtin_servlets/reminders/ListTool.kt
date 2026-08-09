@@ -9,6 +9,10 @@ import coredevices.mcp.SessionContext
 import coredevices.mcp.asFrozenClock
 import coredevices.mcp.data.SemanticResult
 import coredevices.mcp.data.ToolCallResult
+import coredevices.ring.agent.integrations.ReminderListEntry
+import coredevices.ring.agent.integrations.fuzzyFilter
+import coredevices.ring.agent.integrations.itemSource
+import coredevices.ring.data.entity.room.indexfeed.CachedList
 import coredevices.ring.database.room.repository.ListRepository
 import io.modelcontextprotocol.kotlin.sdk.types.Tool
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
@@ -59,15 +63,36 @@ class ListTool: BuiltInMcpTool(
                 "message"
             )
         )
-    )
+    ),
+    extraContext = """
+        Never guess 'reminder_date_time_human' — only pass a time the user actually said, otherwise omit it.
+    """.trimIndent()
 ), KoinComponent {
-    val reminderFactory: ReminderFactory by inject()
+    val reminderIntegrationFactory: ReminderIntegrationFactory by inject()
     private val listRepo: ListRepository by inject()
 
     companion object Companion {
         const val TOOL_NAME = "create_list_item"
-        const val TOOL_DESCRIPTION = "Create a new item in the user's list (e.g a shopping list, todo list) with an optional reminder time"
+        const val TOOL_DESCRIPTION = "Add an item to a shopping list, grocery list, or to-do list. Use when the user names a list or wants to buy groceries, food, or household supplies."
         private val logger = Logger.withTag(ReminderTool::class.simpleName!!)
+
+        /**
+         * Resolves a list-name hint from the model to a list's firestoreId.
+         * Prefers a title match (covers user-renamed and custom lists), then
+         * falls back to the stable seed marker so built-in lists keep resolving
+         * by their original keyword after a rename. The model is still prompted
+         * to use 'todo', which no longer matches the renamed "Reminders" title
+         * but does match its unchanged seed ("todos").
+         */
+        fun matchListIdByHint(lists: List<CachedList>, hint: String): String? {
+            if (hint.isBlank()) return null
+            fun bestMatchOn(key: (CachedList) -> String?): String? = lists
+                .mapNotNull { list -> key(list)?.let { ReminderListEntry(list.firestoreId, it) } }
+                .fuzzyFilter(hint)
+                .firstOrNull()
+                ?.id
+            return bestMatchOn { it.title } ?: bestMatchOn { it.seed }
+        }
     }
 
     @Serializable
@@ -162,31 +187,22 @@ class ListTool: BuiltInMcpTool(
             }.toInstant(tz)
         }
 
-        val reminder = reminderFactory.create(
-            time = instant,
-            message = listItemArgs.message
-        )
         return try {
-
-            val (reminderId, listUsed) = if (reminder is ListAssignableReminder) {
-                try {
-                    reminder.scheduleToList(listItemArgs.list_name) to reminder.listTitle
-                } catch (e: ListNotFoundException) {
-                    logger.e(e) { "List not found, scheduling reminder without list assignment" }
-                    reminder.schedule() to null
-                }
-            } else {
-                reminder.schedule() to null
-            }
-            // Always a note (routed to the resolved list); the item itself is created centrally
-            // in RecordingProcessor from this semantic result so it can carry the tool_call_id.
+            val integration = reminderIntegrationFactory.createReminderIntegration()
+            val list = integration.searchForList(listItemArgs.list_name).firstOrNull()
+            val reminderId = integration.createReminder(
+                listItemArgs.message,
+                instant,
+                listId = list?.id,
+                source = context.itemSource(),
+            )
             val resolvedListId = runCatching { resolveListIdByHint(listItemArgs.list_name) }.getOrNull()
             ToolCallResult(
                 JsonSnake.encodeToString(ListAddResult(success = true, id = reminderId)),
                 SemanticResult.ListItemCreation(
-                    content = reminder.message,
-                    listUsed = listUsed,
-                    remindAt = reminder.time,
+                    content = listItemArgs.message,
+                    listUsed = list?.title,
+                    remindAt = instant,
                     resolvedListId = resolvedListId,
                 )
             )
@@ -204,10 +220,6 @@ class ListTool: BuiltInMcpTool(
         }
     }
 
-    private suspend fun resolveListIdByHint(hint: String): String? {
-        val normalized = hint.trim().lowercase()
-        if (normalized.isEmpty()) return null
-        val lists = listRepo.getAllFlow().first()
-        return lists.firstOrNull { it.title.lowercase().contains(normalized) }?.firestoreId
-    }
+    private suspend fun resolveListIdByHint(hint: String): String? =
+        matchListIdByHint(listRepo.getAllFlow().first(), hint)
 }

@@ -2,6 +2,7 @@ package coredevices.ring.ui.screens.settings
 
 import BugReportButton
 import CoreNav
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -24,19 +25,26 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
@@ -61,6 +69,8 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -70,10 +80,12 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import co.touchlab.kermit.Logger
 import coreapp.util.generated.resources.back
 import coreapp.util.generated.resources.ring_wireframe
 import coreapp.util.generated.resources.settings
 import coredevices.indexai.data.entity.mcp_sandbox.McpSandboxGroupEntity
+import coredevices.ring.agent.LlmMode
 import coredevices.ring.agent.builtin_servlets.notes.NoteIntegrationFactory
 import coredevices.ring.agent.builtin_servlets.notes.NoteProvider
 import coredevices.ring.agent.builtin_servlets.notes.TASKER_DEFINITION
@@ -115,16 +127,29 @@ import org.koin.compose.koinInject
 import org.koin.compose.viewmodel.koinViewModel
 import coreapp.util.generated.resources.Res as UtilRes
 
+// openUri throws if nothing can handle the link (no browser, DPC policy);
+// don't let a help link tap crash the settings screen.
+private fun UriHandler.openUrlSafely(url: String) {
+    try {
+        openUri(url)
+    } catch (e: Exception) {
+        Logger.w(e) { "Failed to open URL: $url" }
+    }
+}
+
 @Composable
 fun IndexSettings(coreNav: CoreNav) {
     val viewModel = koinViewModel<SettingsViewModel>()
     val webhookViewModel = koinViewModel<IndexWebhookSettingsViewModel>()
-    val useCactusAgent by viewModel.useCactusAgent.collectAsState()
+    val llmMode by viewModel.llmMode.collectAsState()
+    val localLlmSupported by viewModel.localLlmSupported.collectAsState()
+    val showLlmModeDialog by viewModel.showLlmModeDialog.collectAsState()
     val showMusicControlDialog by viewModel.showMusicControlDialog.collectAsState()
     val debugDetailsEnabled by viewModel.debugDetailsEnabled.collectAsState()
     val showContactsDialog by viewModel.showContactsDialog.collectAsState()
     val showSecondaryModeDialog by viewModel.showSecondaryModeDialog.collectAsState()
     val showNoteShortcutDialog by viewModel.showNoteShortcutDialog.collectAsState()
+    val autoDismissActionNotifications by viewModel.autoDismissActionNotifications.collectAsState()
     val platform = koinInject<Platform>()
     val webhookUrl by webhookViewModel.webhookUrl.collectAsState()
     val webhookIsLinked = !webhookUrl.isNullOrBlank()
@@ -150,6 +175,17 @@ fun IndexSettings(coreNav: CoreNav) {
     if (showContactsDialog && platform.isAndroid) {
         SettingsBeeperContactsDialog(
             onDismissRequest = viewModel::closeContactsDialog
+        )
+    }
+    if (showLlmModeDialog) {
+        LlmModeDialog(
+            currentMode = llmMode,
+            localSupported = localLlmSupported,
+            onModeSelected = {
+                viewModel.setLlmMode(it)
+                viewModel.closeLlmModeDialog()
+            },
+            onDismissRequest = viewModel::closeLlmModeDialog
         )
     }
     if (showMusicControlDialog) {
@@ -230,7 +266,7 @@ fun IndexSettings(coreNav: CoreNav) {
                         pebble = false,
                         screenContext = mapOf(
                             "screen" to "Settings",
-                            "useCactusAgent" to useCactusAgent.toString(),
+                            "llmMode" to llmMode.name,
                             "username" to (accountUsername ?: "null")
                         )
                     )
@@ -241,6 +277,72 @@ fun IndexSettings(coreNav: CoreNav) {
         LazyColumn(
             modifier = Modifier.padding(padding).fillMaxHeight()
         ) {
+            // Getting Started guide + FAQ — Index 01 is a new kind of device,
+            // so steer everyone to the guide. Opens in the system browser.
+            item {
+                val uriHandler = LocalUriHandler.current
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.MenuBook,
+                                contentDescription = null
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "New to Index 01?",
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "It's a new kind of gadget! A quick read goes a long way.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            // Inverted colors so the button stands out on the container card
+                            Button(
+                                onClick = { uriHandler.openUrlSafely("https://pbl.zip/index-guide") },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    contentColor = MaterialTheme.colorScheme.secondaryContainer,
+                                ),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Getting Started Guide")
+                                Spacer(Modifier.width(6.dp))
+                                Icon(
+                                    Icons.AutoMirrored.Filled.OpenInNew,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                            OutlinedButton(
+                                onClick = { uriHandler.openUrlSafely("https://pbl.zip/index-faq") },
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                ),
+                                border = BorderStroke(
+                                    1.dp,
+                                    MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.5f)
+                                ),
+                            ) {
+                                Text("FAQ")
+                            }
+                        }
+                    }
+                }
+            }
+
             // Device card
             item {
                 IndexDeviceListItem(
@@ -355,6 +457,21 @@ fun IndexSettings(coreNav: CoreNav) {
                     }
                 )
             }
+            item {
+                ListItem(
+                    modifier = Modifier.clickable { viewModel.toggleAutoDismissActionNotifications() },
+                    headlineContent = { Text("Auto-dismiss Notifications") },
+                    supportingContent = {
+                        Text("Dismiss recording action notifications after 5 minutes")
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = autoDismissActionNotifications,
+                            onCheckedChange = { viewModel.toggleAutoDismissActionNotifications() }
+                        )
+                    }
+                )
+            }
 
             // --- Advanced section ---
             item {
@@ -402,17 +519,9 @@ fun IndexSettings(coreNav: CoreNav) {
             }
             item {
                 ListItem(
-                    modifier = Modifier.clickable(onClick = viewModel::toggleCactusAgent),
-                    headlineContent = { Text("Use Local LLM") },
-                    supportingContent = {
-                        Text("Experimental! Less accurate than cloud")
-                    },
-                    trailingContent = {
-                        Switch(
-                            checked = useCactusAgent,
-                            onCheckedChange = { viewModel.toggleCactusAgent() }
-                        )
-                    }
+                    modifier = Modifier.clickable(onClick = viewModel::showLlmModeDialog),
+                    headlineContent = { Text("Assistant Model") },
+                    supportingContent = { Text(llmMode.displayName()) }
                 )
             }
             item {
@@ -488,6 +597,67 @@ fun IndexSettings(coreNav: CoreNav) {
             item {
                 Spacer(Modifier.height(32.dp))
             }
+        }
+    }
+}
+
+fun LlmMode.displayName(): String = when (this) {
+    LlmMode.RemoteOnly -> "Cloud Only"
+    LlmMode.RemoteFirst -> "Cloud (with Local Fallback)"
+    LlmMode.LocalOnly -> "Local Only"
+}
+
+@Composable
+fun LlmModeDialog(
+    currentMode: LlmMode,
+    localSupported: Boolean,
+    onModeSelected: (LlmMode) -> Unit,
+    onDismissRequest: () -> Unit
+) {
+    var targetMode by remember { mutableStateOf(currentMode) }
+    M3Dialog(
+        onDismissRequest = onDismissRequest,
+        icon = { Icon(Icons.Default.Bolt, contentDescription = null) },
+        title = { Text("Assistant Model") },
+        buttons = {
+            TextButton(onClick = onDismissRequest) {
+                Text("Cancel")
+            }
+            TextButton(onClick = { onModeSelected(targetMode) }) {
+                Text("OK")
+            }
+        }
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            LlmMode.entries.forEach { mode ->
+                val enabled = localSupported || !mode.usesLocalCactus()
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(enabled = enabled) { targetMode = mode }
+                ) {
+                    RadioButton(
+                        selected = targetMode == mode,
+                        enabled = enabled,
+                        onClick = { targetMode = mode }
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        mode.displayName(),
+                        color = if (enabled) Color.Unspecified else MaterialTheme.colorScheme.outline
+                    )
+                }
+            }
+            Text(
+                if (localSupported) {
+                    "The local model runs on-device and is experimental — less accurate than cloud."
+                } else {
+                    "The offline agent does not support MCP sandboxes. Set the default MCP " +
+                        "sandbox group's model to \"Index Agent\" to use it."
+                },
+                style = MaterialTheme.typography.bodySmall
+            )
         }
     }
 }
@@ -819,6 +989,8 @@ fun BackupDialog(
     var showDeleteLocalConfirm by remember { mutableStateOf(false) }
     var deleteLocalInput by remember { mutableStateOf("") }
     var showOverwriteKeyConfirm by remember { mutableStateOf(false) }
+    var showEnterKeyDialog by remember { mutableStateOf(false) }
+    var enterKeyInput by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         viewModel.loadBackupCount()
@@ -852,6 +1024,46 @@ fun BackupDialog(
             },
             dismissButton = {
                 TextButton(onClick = { showOverwriteKeyConfirm = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+    if (showEnterKeyDialog) {
+        AlertDialog(
+            onDismissRequest = { showEnterKeyDialog = false; enterKeyInput = "" },
+            modifier = Modifier.dismissKeyboardOnTapOutside(),
+            title = { Text("Enter Encryption Key") },
+            text = {
+                Column {
+                    val focusManager = LocalFocusManager.current
+                    Text("Type or paste the encryption key from another device.")
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = enterKeyInput,
+                        onValueChange = { enterKeyInput = it },
+                        singleLine = true,
+                        label = { Text("Encryption key") },
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = enterKeyInput.isNotBlank() && !encryptionKeyLoading,
+                    onClick = {
+                        viewModel.importKeyFromText(enterKeyInput)
+                        showEnterKeyDialog = false
+                        enterKeyInput = ""
+                    }
+                ) {
+                    Text("Import")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEnterKeyDialog = false; enterKeyInput = "" }) {
                     Text("Cancel")
                 }
             }
@@ -1116,6 +1328,18 @@ fun BackupDialog(
                 headlineContent = { Text("Import Key from QR Code") },
                 supportingContent = {
                     Text("Pick your key's QR code from your photos")
+                }
+            )
+
+            // Enter the key manually as text (e.g. copied from another device)
+            ListItem(
+                modifier = Modifier.clickable(enabled = !encryptionKeyLoading) {
+                    enterKeyInput = ""
+                    showEnterKeyDialog = true
+                },
+                headlineContent = { Text("Enter Key Manually") },
+                supportingContent = {
+                    Text("Type or paste your encryption key as text")
                 }
             )
 
@@ -1417,12 +1641,13 @@ fun AuthorizedIntegrations(preferences: Preferences) {
 
     val platform = koinInject<Platform>()
 
-    // Calendar (Built-in only): the dot reflects whether calendar permission is granted; tapping
-    // it requests the permission. Permission is the "connection" for the built-in calendar account.
+    // Phone Calendar is an opt-in integration (Add integration → Phone Calendar). Its dot
+    // reflects whether calendar permission is granted; tapping re-requests a missing permission.
     val permissionRequester = koinInject<PermissionRequester>()
     val uiContext = rememberUiContext()
     val scope = rememberCoroutineScope()
     val calendarGranted by permissionRequester.granted(Permission.Calendar).collectAsState(false)
+    val phoneCalendarEnabled by preferences.phoneCalendarEnabled.collectAsState()
 
     Column(modifier = Modifier.fillMaxWidth()) {
         IntegrationItem(
@@ -1433,15 +1658,34 @@ fun AuthorizedIntegrations(preferences: Preferences) {
             selectedNoteProvider = currentNoteProvider == NoteProvider.Builtin,
             onSelectReminderProvider = { preferences.setReminderProvider(ReminderProvider.BuiltIn) },
             onSelectNoteProvider = { preferences.setNoteProvider(NoteProvider.Builtin) },
-            hasCalendar = true,
-            calendarGranted = calendarGranted,
-            onToggleCalendar = {
-                if (!calendarGranted) {
-                    val ctx = uiContext ?: return@IntegrationItem
-                    scope.launch { permissionRequester.requestPermission(Permission.Calendar, ctx) }
-                }
-            },
         )
+        if (phoneCalendarEnabled) {
+            var showPhoneCalendarConfig by remember { mutableStateOf(false) }
+            if (showPhoneCalendarConfig) {
+                PhoneCalendarConfigDialog(
+                    preferences = preferences,
+                    onDismiss = { showPhoneCalendarConfig = false }
+                )
+            }
+            IntegrationItem(
+                title = PHONE_CALENDAR_TITLE,
+                hasReminder = false,
+                hasNotes = false,
+                selectedReminderProvider = false,
+                selectedNoteProvider = false,
+                onSelectReminderProvider = {},
+                onSelectNoteProvider = {},
+                onConfigure = { showPhoneCalendarConfig = true },
+                hasCalendar = true,
+                calendarGranted = calendarGranted,
+                onToggleCalendar = {
+                    if (!calendarGranted) {
+                        val ctx = uiContext ?: return@IntegrationItem
+                        scope.launch { permissionRequester.requestPermission(Permission.Calendar, ctx) }
+                    }
+                },
+            )
+        }
         if (platform.isIOS) {
             IntegrationItem(
                 title = "iOS Reminders",
@@ -1510,6 +1754,27 @@ fun AuthorizedIntegrations(preferences: Preferences) {
     }
 }
 
+/** Manage dialog for the opt-in Phone Calendar integration: disconnecting hides the row and
+ *  disables the agent's calendar tool. (The system permission itself stays granted.) */
+@Composable
+private fun PhoneCalendarConfigDialog(preferences: Preferences, onDismiss: () -> Unit) {
+    M3Dialog(
+        onDismissRequest = onDismiss,
+        title = { Text(PHONE_CALENDAR_TITLE) },
+        buttons = {
+            TextButton(
+                onClick = {
+                    preferences.setPhoneCalendarEnabled(false)
+                    onDismiss()
+                }
+            ) { Text("Disconnect") }
+            TextButton(onClick = onDismiss) { Text("Close") }
+        }
+    ) {
+        Text("Index can add events to your phone's calendar when you explicitly ask for a calendar event.")
+    }
+}
+
 /**
  * Lets the user pick which Notion page to-do block is placed
  */
@@ -1534,6 +1799,8 @@ fun NotionPageDialog(onDismiss: () -> Unit) {
 
     M3Dialog(
         onDismissRequest = onDismiss,
+        // The page list can be long; scroll it so the buttons stay reachable.
+        scrollableContent = true,
         title = { Text("Notion Page") },
         buttons = {
             TextButton(onClick = onDismiss) { Text("Cancel") }
@@ -1552,7 +1819,7 @@ fun NotionPageDialog(onDismiss: () -> Unit) {
     ) {
         Column {
             Text(
-                "Choose the page to place your notes' Todo list in.",
+                "Choose the page to place your notes' Reminders list in.",
                 style = MaterialTheme.typography.bodySmall
             )
             Spacer(Modifier.height(12.dp))
@@ -1568,8 +1835,10 @@ fun NotionPageDialog(onDismiss: () -> Unit) {
                 loadedPages.isEmpty() -> Text(
                     "No pages found. Give Index access to a page in Notion, then try again."
                 )
-                else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(loadedPages) { page ->
+                // Plain Column (not LazyColumn): the dialog content scrolls via
+                // scrollableContent, and nested lazy lists inside verticalScroll crash.
+                else -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    loadedPages.forEach { page ->
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -85,7 +86,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -126,17 +126,17 @@ import coredevices.analytics.CoreAnalytics
 import coredevices.firestore.UsersDao
 import coredevices.libindex.IndexDevices
 import coredevices.libindex.LibIndex
-import coredevices.pebble.PebbleDeepLinkHandler
 import coredevices.libindex.device.DiscoveredIndexDevice
 import coredevices.libindex.device.IndexDevice
-import coredevices.libindex.device.KnownIndexDevice
 import coredevices.libindex.device.IndexIdentifier
 import coredevices.libindex.device.IndexPairingResult
 import coredevices.libindex.device.IndexPairingState
-import coredevices.libindex.device.PairingRequestResult
 import coredevices.libindex.device.InterviewedIndexDevice
+import coredevices.libindex.device.KnownIndexDevice
+import coredevices.libindex.device.PairingRequestResult
 import coredevices.libindex.ui.components.Press
 import coredevices.libindex.ui.components.PressPatternDot
+import coredevices.pebble.PebbleDeepLinkHandler
 import coredevices.pebble.PebbleFeatures
 import coredevices.pebble.account.PebbleAccount
 import coredevices.pebble.firmware.FirmwareUpdateUiTracker
@@ -150,6 +150,7 @@ import coredevices.ui.CoreLinearProgressIndicator
 import coredevices.ui.M3Dialog
 import coredevices.ui.PebbleElevatedButton
 import coredevices.util.CompanionDevice
+import coredevices.util.CoreConfig
 import coredevices.util.CoreConfigFlow
 import coredevices.util.Permission
 import coredevices.util.PermissionRequester
@@ -172,6 +173,7 @@ import io.rebble.libpebblecommon.connection.FirmwareUpdateCheckResult
 import io.rebble.libpebblecommon.connection.KnownPebbleDevice
 import io.rebble.libpebblecommon.connection.PebbleDevice
 import io.rebble.libpebblecommon.connection.bt.BluetoothState
+import io.rebble.libpebblecommon.connection.bt.ble.pebble.ReversePpogVersion
 import io.rebble.libpebblecommon.connection.color
 import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdateErrorStarting
 import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdater
@@ -185,12 +187,12 @@ import io.rebble.libpebblecommon.timeline.toPebbleColor
 import io.rebble.libpebblecommon.util.getTempFilePath
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.io.buffered
@@ -201,9 +203,7 @@ import org.jetbrains.compose.resources.stringResource
 import org.jetbrains.compose.ui.tooling.preview.Preview
 import org.koin.compose.koinInject
 import org.koin.dsl.module
-import theme.CoreAppColorScheme
 import theme.coreOrange
-import theme.currentColorScheme
 import kotlin.time.Clock
 import kotlin.uuid.Uuid
 
@@ -249,8 +249,6 @@ fun WatchesScreen(navBarNav: NavBarNav, topBarParams: TopBarParams) {
 
     val bluetoothEnabled by libPebble.bluetoothEnabled.collectAsState()
     var addFabExpanded by remember { mutableStateOf(false) }
-    val indexAlreadyPaired by libIndex.rings.map { rings -> rings.any { it !is DiscoveredIndexDevice } }
-        .collectAsState(initial = false)
     var showIndexAlreadyPairedDialog by remember { mutableStateOf(false) }
     var fabInfoDialog by remember { mutableStateOf<FabInfo?>(null) }
     var showRingWakeHint by remember { mutableStateOf(false) }
@@ -301,13 +299,6 @@ fun WatchesScreen(navBarNav: NavBarNav, topBarParams: TopBarParams) {
         scope.launch {
             if (!ensureScanPermission(uiContext)) return@launch
             libPebble.startClassicScan()
-        }
-    }
-
-    fun scanIndex(uiContext: PlatformUiContext) {
-        scope.launch {
-            if (!ensureScanPermission(uiContext)) return@launch
-            libIndex.startScan()
         }
     }
 
@@ -365,10 +356,18 @@ fun WatchesScreen(navBarNav: NavBarNav, topBarParams: TopBarParams) {
                     FloatingActionButtonMenuItem(
                         onClick = {
                             addFabExpanded = false
-                            if (indexAlreadyPaired) {
-                                showIndexAlreadyPairedDialog = true
-                            } else if (uiContext != null) {
-                                scanIndex(uiContext)
+                            uiContext?.let { ctx ->
+                                scope.launch {
+                                    // Ask for the scan permission before trusting the paired
+                                    // state: reconciling it against the platform bond list
+                                    // needs that permission.
+                                    if (!ensureScanPermission(ctx)) return@launch
+                                    if (libIndex.rings.value.any { it !is DiscoveredIndexDevice }) {
+                                        showIndexAlreadyPairedDialog = true
+                                    } else {
+                                        libIndex.startScan()
+                                    }
+                                }
                             }
                         },
                         icon = { Icon(Icons.Default.RadioButtonUnchecked, contentDescription = "Scan") },
@@ -426,7 +425,7 @@ fun WatchesScreen(navBarNav: NavBarNav, topBarParams: TopBarParams) {
 
                 if (firmwareUpdateUiTracker.shouldUiUpdateCheck()) {
                     firmwareUpdateUiTracker.didFirmwareUpdateCheckFromUi()
-                    libPebble.checkForFirmwareUpdates()
+                    libPebble.checkForFirmwareUpdates(false)
                 }
             }
 
@@ -581,6 +580,9 @@ fun WatchesScreen(navBarNav: NavBarNav, topBarParams: TopBarParams) {
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
+                    // Reserve space so the last device rows can scroll clear of the floating
+                    // add-device FAB (Scaffold does not reserve content padding for the FAB).
+                    contentPadding = PaddingValues(bottom = 88.dp),
                     state = listState,
                 ) {
                     itemsIndexed(
@@ -642,6 +644,13 @@ fun WatchesScreen(navBarNav: NavBarNav, topBarParams: TopBarParams) {
                         "You'll see the light flash red green blue repeatedly when successful.",
                         modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 8.dp)
                     )
+                    val uriHandler = LocalUriHandler.current
+                    TextButton(
+                        onClick = { uriHandler.openUri("https://help.repebble.com/en/articles/15724430-hard-resets-how-to-fix-most-problems-on-index-01") },
+                        modifier = Modifier.align(Alignment.CenterHorizontally),
+                    ) {
+                        Text("Need more help? View detailed instructions")
+                    }
                 }
             },
             confirmButton = {
@@ -944,6 +953,13 @@ fun RingItem(
                     )
                     Text("Short (3 times) LONG (1 second, 3 times) short (3 times)", modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 8.dp) )
                     Text("You'll see the light flash red green blue repeatedly when successful.", modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 8.dp) )
+                    val uriHandler = LocalUriHandler.current
+                    TextButton(
+                        onClick = { uriHandler.openUri("https://help.repebble.com/en/articles/15724430-hard-resets-how-to-fix-most-problems-on-index-01") },
+                        modifier = Modifier.align(Alignment.CenterHorizontally),
+                    ) {
+                        Text("Need more help? View detailed instructions")
+                    }
                 }
             },
             confirmButton = {
@@ -1113,6 +1129,7 @@ fun FirmwareUpdateErrorStarting.message(): String = when (this) {
 fun PebbleDevice.stateText(
     firmwareUpdateState: FirmwareUpdater.FirmwareUpdateStatus,
     languagePackInstallState: LanguagePackInstallState,
+    coreConfig: CoreConfig,
 ): String {
     val installingState = when (firmwareUpdateState) {
         is FirmwareUpdater.FirmwareUpdateStatus.InProgress -> {
@@ -1129,11 +1146,17 @@ fun PebbleDevice.stateText(
         is FirmwareUpdater.FirmwareUpdateStatus.WaitingForReboot -> " - Rebooting watch to finish update to ${firmwareUpdateState.update.version.stringVersion}"
         is FirmwareUpdater.FirmwareUpdateStatus.WaitingToStart -> " - Updating to PebbleOS ${firmwareUpdateState.update.version.stringVersion}"
     }
+    val reversePpogState = when {
+        !coreConfig.showWatchConnectionDebugInfo -> ""
+        reversePpogVersion() != null -> " (reverse PPOG: ${reversePpogVersion()})"
+        else -> ""
+    }
     val stateText = when (this) {
-        is ConnectedPebbleDevice -> "Connected$installingState"
-        is ConnectedPebbleDeviceInRecovery -> "Connected (Factory)$installingState"
+        is ConnectedPebbleDevice -> "Connected$reversePpogState$installingState"
+        is ConnectedPebbleDeviceInRecovery -> "Connected (Factory)$reversePpogState$installingState"
         is ConnectingPebbleDevice -> {
-            when {
+            val connectingState =
+                when {
                 rebootingAfterFirmwareUpdate -> if (negotiating) {
                     "Rebooting after update - Negotiating"
                 } else {
@@ -1143,14 +1166,22 @@ fun PebbleDevice.stateText(
                 negotiating -> "Negotiating"
                 else -> "Connecting"
             }
+            "$connectingState$reversePpogState"
         }
 
         is KnownPebbleDevice, is DiscoveredPebbleDevice -> "Disconnected"
         is DisconnectingPebbleDevice -> "Disconnecting"
-        else -> "Unknown ($this)"
     }
     return stateText
 }
+
+private fun PebbleDevice.reversePpogVersion(): ReversePpogVersion? =
+    when (this) {
+        is ConnectedPebbleDevice -> reversePpogVersion
+        is ConnectedPebbleDeviceInRecovery -> reversePpogVersion
+        is ConnectingPebbleDevice -> reversePpogVersion
+        else -> null
+    }
 
 private fun PebbleDevice.isActive(): Boolean = when (this) {
     is ConnectedPebbleDevice, is ConnectingPebbleDevice, is ConnectedPebbleDeviceInRecovery -> true
@@ -1200,7 +1231,6 @@ fun WatchMenu(watch: PebbleDevice, navBarNav: NavBarNav) {
     val showConfirmResetIntoPrfDialog = remember { mutableStateOf(false) }
     val showConfirmFactoryResetDialog = remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    val currentColorScheme = currentColorScheme()
 
     Box {
         IconButton(onClick = { showMenu = !showMenu }) {
@@ -1209,20 +1239,7 @@ fun WatchMenu(watch: PebbleDevice, navBarNav: NavBarNav) {
         DropdownMenu(
             expanded = showMenu,
             onDismissRequest = { showMenu = false },
-            modifier = Modifier.widthIn(min = 250.dp).then(
-                if (currentColorScheme == CoreAppColorScheme.Grey) {
-                    Modifier.border(
-                        width = 1.5.dp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
-                        shape = RoundedCornerShape(4.dp)
-                    )
-                } else Modifier
-            ),
-            containerColor = if (currentColorScheme == CoreAppColorScheme.Grey) {
-                MaterialTheme.colorScheme.surfaceContainerHigh
-            } else {
-                MenuDefaults.containerColor
-            },
+            modifier = Modifier.widthIn(min = 250.dp),
         ) {
             val firmwareVersion = when {
                 watch is KnownPebbleDevice -> watch.runningFwVersion
@@ -1281,7 +1298,7 @@ fun WatchMenu(watch: PebbleDevice, navBarNav: NavBarNav) {
                             Icon(Icons.Outlined.Autorenew, contentDescription = null)
                         },
                         onClick = {
-                            watch.checkforFirmwareUpdate()
+                            watch.checkforFirmwareUpdate(true)
                         }
                     )
                 }
@@ -1290,7 +1307,8 @@ fun WatchMenu(watch: PebbleDevice, navBarNav: NavBarNav) {
             HorizontalDivider()
 
             if (watch is ConnectedPebbleDevice) {
-                val languagePackInstalled = watch.languagePackInstalled()
+                val languagePackRepository: LanguagePackRepository = koinInject()
+                val languagePackInstalled = watch.languagePackInstalled(languagePackRepository)
                 val languageText = when  {
                     languagePackInstalled.isNullOrBlank() -> "Language"
                     else -> "Language: $languagePackInstalled"
@@ -1668,10 +1686,10 @@ data class TestNotificationContent(
     val color: TimelineColor? = TimelineColor.Orange,
 )
 
-fun ConnectedPebbleDevice.languagePackInstalled(): String? {
+fun ConnectedPebbleDevice.languagePackInstalled(repository: LanguagePackRepository): String? {
     val languagePackInstalledAtConnectionTime = installedLanguagePack
     val languagePackRecentlyInstalledSinceConnection = (languagePackInstallState as? LanguagePackInstallState.Idle)?.successfullyInstalledLanguage
-    return languagePackRecentlyInstalledSinceConnection ?: languagePackInstalledAtConnectionTime?.let { "${it.isoLocal} (v${it.version})" }
+    return languagePackRecentlyInstalledSinceConnection ?: languagePackInstalledAtConnectionTime?.let { repository.displayNameForInstalled(it) }
 }
 
 private const val CUSTOM_NOTIFICATION_CONTENT_KEY = "custom_notification_content"
@@ -1944,6 +1962,8 @@ fun WatchDetails(
 ) {
     val appContext: AppContext = koinInject()
     val pebbleFeatures = koinInject<PebbleFeatures>()
+    val coreConfigFlow = koinInject<CoreConfigFlow>()
+    val coreConfig by coreConfigFlow.flow.collectAsState()
     val firmwareUpdateState = remember(watch) {
         if (watch is ConnectedPebble.Firmware) {
             watch.firmwareUpdateState
@@ -1956,7 +1976,7 @@ fun WatchDetails(
     val languagePackInstallState = (watch as? ConnectedPebble.LanguageState)?.languagePackInstallState ?: LanguagePackInstallState.Idle()
     Row {
         Text(
-            text = watch.stateText(firmwareUpdateState, languagePackInstallState),
+            text = watch.stateText(firmwareUpdateState, languagePackInstallState, coreConfig),
             fontWeight = when {
                 watch.isActive() -> FontWeight.Bold
                 else -> FontWeight.Normal

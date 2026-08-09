@@ -18,7 +18,7 @@ interface CachedItemDao {
     @Query("SELECT * FROM CachedItem WHERE firestoreId = :id")
     suspend fun getById(id: String): CachedItem?
 
-    @Query("SELECT * FROM CachedItem WHERE firestoreId = :id")
+    @Query("SELECT * FROM CachedItem WHERE firestoreId = :id AND deleted = 0")
     fun getByIdFlow(id: String): Flow<CachedItem?>
 
     @Query("SELECT * FROM CachedItem WHERE deleted = 0 ORDER BY updatedAt DESC")
@@ -35,6 +35,11 @@ interface CachedItemDao {
 
     @Query("SELECT * FROM CachedItem WHERE sourceRecordingId = :recordingId AND deleted = 0")
     suspend fun getByRecording(recordingId: String): List<CachedItem>
+
+    /** All non-deleted items. Used to resolve a reminder back to its feed item by
+     *  `metadata.localReminderId` when there's no source recording to query by. */
+    @Query("SELECT * FROM CachedItem WHERE deleted = 0")
+    suspend fun getAllActive(): List<CachedItem>
 
     /**
      * Items whose `parentListIdsCsv` contains [listId]. Uses LIKE matching with
@@ -65,4 +70,7 @@ interface CachedItemDao {
 
     @Query("SELECT firestoreId FROM CachedItem")
     suspend fun getAllIds(): List<String>
+
+    @Query("SELECT COUNT(*) FROM CachedItem WHERE locked = 1")
+    suspend fun countLocked(): Int
 }

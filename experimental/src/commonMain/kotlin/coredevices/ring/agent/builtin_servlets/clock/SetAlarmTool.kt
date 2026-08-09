@@ -43,13 +43,16 @@ class SetAlarmTool : BuiltInMcpTool(
             ),
             required = listOf("time_hours", "time_minutes")
         )
-    )
+    ),
+    extraContext = """
+        Only call 'set_alarm' with a time the user actually said. If the alarm time is missing from the request, do not call this tool and do not guess a time.
+    """.trimIndent()
 ) {
 
     companion object {
         private val logger = Logger.withTag(SetAlarmTool::class.simpleName!!)
         const val TOOL_NAME = "set_alarm"
-        const val TOOL_DESCRIPTION = "Set an alarm for a specified time"
+        const val TOOL_DESCRIPTION = "Set an alarm for a specific clock time like 8am or 16:30."
     }
 
     @Serializable

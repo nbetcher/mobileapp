@@ -1,39 +1,38 @@
-# libpebble3
+# Pebble Mobile app
 
-libpebble3 is a kotlin multiplatform library for interacting with Pebble devices. It is designed to do everything that a Pebble/Core watch companion app needs to do, except for the UI and specific web services.
+Welcome to the official source code for the Pebble mobile app. Download the app from the [iOS Appstore](https://apps.apple.com/us/app/pebble-core/id6743771967) or [Google Play](https://play.google.com/store/apps/details?id=coredevices.coreapp&hl=en_US). The app is entirely open source. 
 
-See https://github.com/coredevices/libpebble3/wiki/Roadmap
+This app supports ALL Pebble watches, and Pebble Index 01 rings.
 
-# Using libpebble3
+# Architecture
 
-See https://github.com/coredevices/libpebble3/wiki/Roadmap
+**New to Pebble?** A Pebble watch runs its own firmware and its own apps/watchfaces, but has no internet connection of its own. This app is the watch's companion and gateway to the world: it holds a persistent Bluetooth connection (BLE, or Bluetooth Classic on older watches) to relay notifications, sync data (time, weather, calendar, contacts, health), install watchapps, and proxy network requests on the watch's behalf. Much of the app's job is to be a reliable background service that stays connected and answers the watch quickly.
 
-## Enabling PebbleKit Android 2
+The codebase is **Kotlin Multiplatform + Compose Multiplatform**: one shared codebase — including the UI — builds both the Android and iOS apps. Almost everything lives in `commonMain`; platform-specific pieces (BLE stack, notification access, background execution) sit behind `expect`/`actual` interfaces. On iOS, `iosApp` is a thin Swift shell that embeds the shared Kotlin code as a framework via CocoaPods.
 
-To fully enable PebbleKit Android 2 support, you have to add this provider to your `AndroidManifest.xml`:
+Watch communication lives in `libpebble3` and follows a few core concepts:
 
-```xml
-<provider
-    android:authorities="[YOUR_PACKAGE].pebblekit"
-    android:name="io.rebble.libpebblecommon.pebblekit.two.PebbleKitProvider"
-    android:exported="true" />
-```
+- **Pebble Protocol** — a binary, endpoint-based message protocol spoken over the Bluetooth connection. Packet definitions live in `libpebble3` under `io/rebble/libpebblecommon/packets/`.
+- **Services & endpoint managers** — both scoped to a single watch connection. Services translate raw protocol messages into typed APIs for the rest of the app; endpoint managers handle the more complex stateful flows on top of them.
+- **BlobDB** — the watch keeps small key-value databases (notifications, timeline pins, installed apps, contacts, …). The phone keeps the canonical copy of each record in a Room database and reconciles with the watch over the protocol (mostly phone → watch, with some watch-originated writebacks). The `blobannotations` + `blobdbgen` modules generate the serialization/sync plumbing via KSP.
+- **PebbleKit JS** — watchapps can include a JavaScript component that runs on the *phone*, inside this app (`js/`), giving watchapps network access and configuration UIs.
 
-Where the `[YOUR_PACKAGE]` is the package name of your application.
+Module map:
 
-## Enabling PebbleKit Android Classic
+| Module | What it is |
+|---|---|
+| `composeApp` | App entry point: Compose UI, navigation, DI wiring (Koin), Firebase |
+| `libpebble3` | Everything needed to talk to a Pebble watch: BLE transport, protocol, services, BlobDB sync. Also usable as a standalone library |
+| `pebble` | Pebble app features shared between platforms, above the library layer |
+| `experimental` | Pebble Index 01 (ring) support: continuous BLE scanning, voice-note recording and ingestion |
+| `index-ai` | The "Index" AI assistant and its data layer (transcription, notes) |
+| `libindex` | Index device plumbing: pairing, transfer, storage |
+| `mcp` | MCP (Model Context Protocol) client/tool integration |
+| `cactus`, `resampler`, `krisp-stubs` | Audio/ML support: on-device LLM inference, audio resampling, and API stubs for the private Krisp noise-cancellation integration |
+| `blobannotations`, `blobdbgen` | KSP annotations + code generator for BlobDB records |
+| `util` | Shared utilities (logging, IO, …) |
 
-To fully enable PebbleKit Android Classic, you have to add this provider to your `AndroidManifest.xml`:
-
-```xml
-<provider
-    android:authorities="com.getpebble.android.provider.basalt"
-    android:name="io.rebble.libpebblecommon.pebblekit.classic.PebbleKitProvider"
-    tools:ignore="ExportedContentProvider"
-    android:exported="true" />
-```
-
-Note that by doing so, your app will not be able to be installed alongside other apps that also do this.
+Stack at a glance: Koin (DI), Ktor (HTTP), Room (storage), Kermit (logging), coroutines/Flow throughout.
 
 # Mobile App
 
@@ -42,8 +41,8 @@ The cross-platform Pebble mobile app is located in `composeApp`.
 Several features (e.g. bug reporting, google login, memfault, online transcription, github developer connection) will not work without tokens configured in `gradle.properties` (but all core features do work).
 
 ### Android
-* Compile on Android with `./gradlew :composeApp:assembleRelease`.
-* You will need a `google-services.json` in `composeApp/src` to compile on Android (an examples with dummy values is provided in `google-services-dummy.json`).
+* Compile on Android with `./gradlew :androidApp:assembleRelease`.
+* You will need a `google-services.json` in `androidApp/src` to compile on Android (an examples with dummy values is provided in `google-services-dummy.json`).
 * You will need a keystore with some keys if you intend to do a release build on Android (unless you use `LOCAL_RELEASE_BUILD=true` in `gradle.properties`).
 
 ### iOS
@@ -73,13 +72,35 @@ Several features (e.g. bug reporting, google login, memfault, online transcripti
    sudo ln -s /opt/homebrew/bin/pod /usr/local/bin/pod
    ```
 
-3. **Setup GitHub token for speex module**
+3. **Install Android Studio**
 
-    Create a `local.properties` file in the project root with your GitHub credentials.
+   The Gradle build needs an Android SDK even when only building for iOS
+   (several modules apply the Android Gradle plugin). Install
+   [Android Studio](https://developer.android.com/studio) and let its
+   setup wizard install the SDK at the default location
+   (`~/Library/Android/sdk`).
+
+   Then create a `local.properties` file in the project root pointing at it:
+
+   ```properties
+   sdk.dir=/Users/<you>/Library/Android/sdk
+   ```
+
+4. **Install the iOS platform for Xcode**
+
+   Recent Xcode versions ship without the iOS platform (SDK device
+   support and simulator runtime). Without it, any iOS build fails with
+   "iOS X.Y is not installed". Download it with:
+
+   ```bash
+   xcodebuild -downloadPlatform iOS
+   ```
+
+   (This is the same ~8 GB download as Xcode → Settings → Components.)
 
 #### Configuration
 
-4. **Configure Entitlements**
+5. **Configure Entitlements**
 
    Set `iosApp/iosApp/iosApp.entitlements` to:
 
@@ -94,7 +115,7 @@ Several features (e.g. bug reporting, google login, memfault, online transcripti
    </plist>
    ```
 
-5. **Install CocoaPods dependencies**
+6. **Install CocoaPods dependencies**
 
    ```bash
    ./gradlew podInstall
@@ -102,21 +123,29 @@ Several features (e.g. bug reporting, google login, memfault, online transcripti
 
    This will create `Podfile.lock` and set up all required dependencies.
 
-6. **Configure Bundle ID and Signing**
+7. **Configure Bundle ID and Signing**
 
    - Open `iosApp/iosApp.xcworkspace` in Xcode (⚠️ **Important**: use `.xcworkspace`, not `.xcodeproj`)
    - Go to the target `iosApp` → **Signing & Capabilities**
    - Set your **Team** (your Apple Developer account)
    - Set **Bundle Identifier** to your own (e.g., `com.yourname.coredevices.coreapp`)
 
-7. **Configure Firebase**
+8. **Configure Firebase**
 
    - Create a free Firebase account at https://console.firebase.google.com
    - Create a new iOS app with the same Bundle ID you set above
    - Download `GoogleService-Info.plist` and place it in `iosApp/iosApp/`
    - The file should be named exactly `GoogleService-Info.plist`
 
-8. **Create a git tag for app version**
+   If you don't need any Firebase-dependent features, you can skip the
+   Firebase account and use the provided dummy config instead (same as
+   `google-services-dummy.json` on Android):
+
+   ```bash
+   cp iosApp/iosApp/GoogleService-Info-dummy.plist iosApp/iosApp/GoogleService-Info.plist
+   ```
+
+9. **Create a git tag for app version**
 
    Create a git tag that will be used as the version of the app:
 
@@ -126,7 +155,7 @@ Several features (e.g. bug reporting, google login, memfault, online transcripti
 
 #### Build and Run
 
-9. **Build and run in Xcode**
+10. **Build and run in Xcode**
 
    - Open `iosApp/iosApp.xcworkspace` in Xcode
    - Select your target device or simulator and run.
@@ -135,6 +164,14 @@ Several features (e.g. bug reporting, google login, memfault, online transcripti
    > - Opened the `.xcworkspace` file (not `.xcodeproj`)
    > - Ran `pod install` successfully
    > - Cleaned the build folder (`Product → Clean Build Folder`)
+
+   > **Known issue**: simulator builds currently fail to link with
+   > `ld: building for 'iOS-simulator', but linking in object file (...libspeex.a...) built for 'iOS'`.
+   > The published `io.github.coredevices.speex` simulator artifact ships a
+   > device-built `libspeex.a` inside its iosSimulatorArm64 klib (every
+   > version on Maven Central is affected) and needs to be republished.
+   > Until then, run on a physical device. Note the simulator has no
+   > Bluetooth in any case, so connecting a watch requires a device.
 
 
 
@@ -145,7 +182,11 @@ In order to honour the Pebble trademark, you may not use "Pebble" in the name of
 
 # Contributing
 
-We aren't actively encouraging contributions yet, while we are aggressively building out feature parity with the original Pebble apps. CI testing is not comprehensive, so changes need to be manually tested with real hardware using CoreApp, and our roadmap/bug tracker is not currently on github. We will update when this changes.
+Pebble employs several (extremely busy) full time mobile developers to work on this app. If you'd like to contribute, we welcome PRs but caution you that it may take us some time before we can review your PR. Please be patient with us :)
+
+# Reporting bugs
+
+Please use the built-in bug report feature in the Pebble app by going to Settings > Get Help > New Bug Report instead of Github issues, as the internal bug reports contain more information for us to debug most issues. 
 
 # Development Guidelines
 
@@ -163,7 +204,7 @@ Connection:
 
 See https://ericmigi.notion.site/Core-Devices-Software-Licensing-1c0fbb55ea8480f88d27ccf20fcb84a8
 
-Copyright 2025 Core Devices LLC
+Copyright 2026 Core Devices LLC
 
 This software is dual-licensed by Core Devices LLC. It can be used either:
   

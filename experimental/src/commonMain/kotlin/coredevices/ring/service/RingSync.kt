@@ -27,9 +27,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
@@ -61,6 +61,7 @@ import kotlin.math.roundToInt
 import kotlin.time.Clock
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Instant
 import kotlin.time.TimeSource
 import kotlin.time.measureTime
 import kotlin.uuid.Uuid
@@ -109,6 +110,13 @@ sealed interface RingEvent {
             override val isFailsafe: Boolean
         ) : FirmwareUpdate
 
+        /** The update never got underway (typically we couldn't connect); it will be retried. */
+        data class NotStarted(
+            override val ringId: String,
+            override val newVersion: String,
+            override val isFailsafe: Boolean
+        ) : FirmwareUpdate
+
         data class Success(
             override val ringId: String,
             override val newVersion: String,
@@ -149,6 +157,9 @@ class RingSync(
     private val saveSemaphore = Semaphore(permits = 8)
     private val _lastRing: MutableStateFlow<KMPHaversineSatellite?> = MutableStateFlow(null)
     val lastRing = _lastRing.asStateFlow()
+
+    private val _lastSyncedAt: MutableStateFlow<Instant?> = MutableStateFlow(null)
+    val lastSyncedAt = _lastSyncedAt.asStateFlow()
 
     private fun resample(samples: ShortArray, sampleRate: Int): ShortArray {
         val resampler = Resampler(sampleRate, TARGET_SAMPLE_RATE)
@@ -394,6 +405,25 @@ class RingSync(
                                                                     }
                                                                 }
 
+                                                                // Advancing to a new start index means any lower index still in
+                                                                // Started never had its audio delivered (the ring moved on). Fail
+                                                                // them so they reach a terminal state (MOB-8727).
+                                                                val orphaned = withContext(Dispatchers.IO) {
+                                                                    ringTransferRepository.failOrphanedStartedTransfersBelow(idx)
+                                                                }
+                                                                orphaned.forEach { orphan ->
+                                                                    trace.markEvent("past_transfer_failed",
+                                                                        TraceEventData.PastTransferFailed(
+                                                                            satellite = satelliteSerial,
+                                                                            transferId = orphan.id
+                                                                        )
+                                                                    )
+                                                                    logger.i {
+                                                                        "Advanced to index $idx, marking orphaned transfer ${orphan.id} " +
+                                                                                "(start idx ${orphan.transferInfo?.collectionStartIndex}) as failed"
+                                                                    }
+                                                                }
+
                                                                 lastIdx = idx
                                                                 val id = withContext(Dispatchers.IO) {
                                                                     ringTransferRepository.createRingTransfer(
@@ -421,7 +451,10 @@ class RingSync(
                                                                 collectionIndex = transferStatus.collectionIndex,
                                                             )
                                                         )
-                                                        logger.e(transferStatus.exception) { "Transfer dropped: ${transferStatus.collectionIndex}" }
+                                                        val loggedException = transferStatus.exception?.takeIf {
+                                                            it.message?.contains("Connection failure", ignoreCase = true) != true
+                                                        }
+                                                        logger.e(loggedException) { "Transfer dropped: ${transferStatus.collectionIndex} ${transferStatus.exception?.message ?: ""}" }
                                                         if (rangeStart != null) {
                                                             logTransferFailedEvent(
                                                                 serialNumber = satelliteSerial,
@@ -522,6 +555,7 @@ class RingSync(
                                                     }
 
                                                     is TransferStatus.TransferComplete -> {
+                                                        _lastSyncedAt.value = Clock.System.now()
                                                         val range = transferRange
                                                         trace.markEvent("transfer_completed",
                                                             TraceEventData.TransferCompleted(
@@ -615,6 +649,10 @@ class RingSync(
                                                                     transfer.id,
                                                                     transferInfo
                                                                 )
+                                                                ringTransferRepository.updateTransferStatus(
+                                                                    transfer.id,
+                                                                    RingTransferStatus.Saving
+                                                                )
                                                             }
                                                             logger.d { "Saving transfer..." }
                                                             id = "ring_${transferStatus.satellite.id}-${transferStatus.collectionIndex}-${Uuid.random()}"
@@ -681,6 +719,14 @@ class RingSync(
                                                                         throw e
                                                                     } catch (e: Exception) {
                                                                         logger.e(e) { "Error saving/queueing transfer ${transfer.id}: ${e.message}" }
+                                                                        // Saving is excluded from the orphan sweep, so give a failed
+                                                                        // save an explicit terminal state instead of stranding it.
+                                                                        withContext(NonCancellable + Dispatchers.IO) {
+                                                                            ringTransferRepository.updateTransferStatus(
+                                                                                transfer.id,
+                                                                                RingTransferStatus.Failed
+                                                                            )
+                                                                        }
                                                                         sendBugReportPrompt()
                                                                     }
                                                                 }
@@ -763,6 +809,20 @@ class RingSync(
                                                         )
                                                     )
                                                 }
+
+                                                is SatelliteStatus.FirmwareUpdating.NotStarted -> {
+                                                    logger.i {
+                                                        "Satellite ${satelliteStatus.satellite.id} firmware update to version ${satelliteStatus.newVersion} did not start, will retry"
+                                                    }
+                                                    deviceManager.markFirmwareUpdatingState(satelliteStatus.satellite, isUpdating = false)
+                                                    _ringEvents.emit(
+                                                        RingEvent.FirmwareUpdate.NotStarted(
+                                                            ringId = satelliteStatus.satellite.id,
+                                                            newVersion = satelliteStatus.newVersion,
+                                                            isFailsafe = isFailsafe,
+                                                        )
+                                                    )
+                                                }
                                             }
                                         }
 
@@ -812,8 +872,8 @@ class RingSync(
         )
     }
 
-    suspend fun stop() {
-        syncJob?.cancelAndJoin()
+    fun stop() {
+        syncJob?.cancel()
     }
 
     fun lastRingSummary(): String? = lastRing.value?.let {

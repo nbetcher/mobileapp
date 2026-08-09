@@ -3,6 +3,7 @@ package coredevices.ring.agent.integrations.obsidian
 import PlatformUiContext
 import co.touchlab.kermit.Logger
 import coredevices.ring.agent.builtin_servlets.notes.NoteProvider
+import coredevices.ring.agent.integrations.ItemSource
 import coredevices.ring.agent.integrations.NoteIntegration
 import coredevices.ring.data.IntegrationDefinition
 import kotlinx.coroutines.sync.Mutex
@@ -54,10 +55,11 @@ class ObsidianIntegration(
         return vault.hasAccess(handle)
     }
 
-    fun saveConfig(mode: ObsidianMode, targetNote: String, subfolder: String) {
+    fun saveConfig(mode: ObsidianMode, targetNote: String, subfolder: String, customTag: String) {
         prefs.setMode(mode)
         prefs.setTargetNote(targetNote)
         prefs.setSubfolder(subfolder)
+        prefs.setCustomTag(ObsidianNoteFormatter.sanitizeTag(customTag))
     }
 
     fun vaultDisplayName(): String? = prefs.vaultName.value
@@ -66,6 +68,7 @@ class ObsidianIntegration(
     fun currentMode(): ObsidianMode = prefs.mode.value
     fun currentTargetNote(): String = prefs.targetNote.value
     fun currentSubfolder(): String = prefs.subfolder.value
+    fun currentCustomTag(): String = prefs.customTag.value
 
     /** Lists existing `.md` files in the vault for the "named note" picker (empty if no access). */
     suspend fun listNotes(): List<String> {
@@ -74,7 +77,7 @@ class ObsidianIntegration(
         return vault.listMarkdownFiles(handle)
     }
 
-    override suspend fun createNote(content: String): String? = noteMutex.withLock {
+    override suspend fun createNote(content: String, source: ItemSource?): String? = noteMutex.withLock {
         val handle = prefs.vaultHandle.value
         if (handle == null || !vault.hasAccess(handle)) {
             logger.w { "No accessible Obsidian vault; cannot create note" }
@@ -91,6 +94,7 @@ class ObsidianIntegration(
             mode = mode,
             targetNote = targetNote,
             subfolder = prefs.subfolder.value,
+            customTag = prefs.customTag.value,
         )
         val local = clock.now().toLocalDateTime(timeZone)
         val write = ObsidianNoteFormatter.plan(

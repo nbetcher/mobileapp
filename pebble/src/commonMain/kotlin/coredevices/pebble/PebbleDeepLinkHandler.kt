@@ -43,6 +43,9 @@ interface PebbleDeepLinkHandler {
     val requestIndexCompanion: StateFlow<Boolean>
     fun consumeRequestIndexCompanion()
     fun handle(uri: Uri?): Boolean
+
+    /** Show a navbar tab on the watch home screen (same mechanism as pebble://navbar links). */
+    fun navigateToTab(route: NavBarRoute)
 }
 
 class RealPebbleDeepLinkHandler(
@@ -65,6 +68,10 @@ class RealPebbleDeepLinkHandler(
 
     override fun consumeRequestIndexCompanion() {
         _requestIndexCompanion.value = false
+    }
+
+    override fun navigateToTab(route: NavBarRoute) {
+        _navigateToPebbleDeepLink.value = PebbleDeepLink(route)
     }
 
     data class PebbleDeepLink(
@@ -193,7 +200,7 @@ class RealPebbleDeepLinkHandler(
             pebbleAccount.setToken(token = token, bootUrl = path)
             _initialLockerSync.value = true
             libPebble.requestLockerSync().await()
-            libPebble.checkForFirmwareUpdates()
+            libPebble.checkForFirmwareUpdates(false)
             _initialLockerSync.value = false
             analytics.logEvent("rebble.logged-in")
         }

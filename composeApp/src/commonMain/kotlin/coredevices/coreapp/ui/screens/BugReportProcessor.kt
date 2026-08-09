@@ -32,11 +32,17 @@ import io.rebble.libpebblecommon.util.getTempFilePath
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.IO
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.transformWhile
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.datetime.TimeZone
 import kotlinx.io.Buffer
@@ -53,6 +59,7 @@ import kotlinx.serialization.json.JsonObject
 import org.koin.mp.KoinPlatform
 import size
 import kotlin.time.Clock
+import kotlin.time.Duration.Companion.seconds
 
 data class BugReportGenerationParams(
     val userMessage: String,
@@ -128,6 +135,10 @@ class BugReportProcessor(
 ) {
     private val logger = Logger.withTag("BugReportProcessor")
 
+    companion object {
+        private const val MAX_CONCURRENT_UPLOADS = 4
+    }
+
     private fun getPKJSSummary(): String {
         return try {
             pebbleAppDelegate.getPKJSSessions()
@@ -150,6 +161,7 @@ class BugReportProcessor(
                 CactusSTTMode.LocalOnly, CactusSTTMode.LocalFirst -> "Local"
                 CactusSTTMode.RemoteOnly, CactusSTTMode.RemoteFirst -> "Remote"
                 CactusSTTMode.RebbleOnly, CactusSTTMode.RebbleFirst, CactusSTTMode.RebbleFallback -> "Rebble"
+                CactusSTTMode.PlatformOnly -> "Platform"
                 null -> "None"
             }
             "\nSTT Summary\n" +
@@ -291,6 +303,7 @@ class BugReportProcessor(
                 append("\nAttachment: ${it.fileName}")
             }
             append("\nTime since last full background sync: ${coreBackgroundSync.timeSinceLastSync()}")
+            append("\nAnalytics settings:")
             append("\nFirebase uploads enabled: ${settings.getBoolean(KEY_ENABLE_FIREBASE_UPLOADS, true)}")
             append("\nMemfault uploads enabled: ${settings.getBoolean(KEY_ENABLE_MEMFAULT_UPLOADS, true)}")
             append("\nMixpanel uploads enabled: ${settings.getBoolean(KEY_ENABLE_MIXPANEL_UPLOADS, true)}")
@@ -436,7 +449,7 @@ class BugReportProcessor(
         }
         GlobalScope.launch(Dispatchers.IO) {
             val userIdToken = try {
-                Firebase.auth.currentUser?.getIdToken(false)
+                Firebase.auth.currentUser?.getIdToken(true)
             } catch (e: Exception) {
                 logger.e(e) { "No user token: ${e.message}" }
                 null
@@ -484,9 +497,7 @@ class BugReportProcessor(
         // Add recording if requested
         if (params.sendRecording && params.expOutputPath != null) {
             withContext(Dispatchers.IO) {
-                experimentalDevices.exportOutput(params.expOutputPath)?.let {
-                    attachments.add(it)
-                }
+                attachments.addAll(experimentalDevices.exportOutput(params.expOutputPath))
             }
         }
 
@@ -597,7 +608,9 @@ class BugReportProcessor(
             }
 
             // Step 2: Get presigned URLs for all files
-            val presignedResult = bugApi.getPresignedUrls(fileMetadata, googleIdToken)
+            val presignedResult = withStrikes {
+                bugApi.getPresignedUrls(fileMetadata, googleIdToken)
+            }
             if (presignedResult.isFailure) {
                 logger.e { "Failed to get presigned URLs: ${presignedResult.exceptionOrNull()}" }
                 return@withContext Result.failure(Exception("Unable to prepare file uploads. Please check your connection and try again."))
@@ -609,50 +622,49 @@ class BugReportProcessor(
                 return@withContext Result.failure(Exception("Unable to prepare file uploads. Please try again later."))
             }
 
-            // Step 3: Upload each file to R2
-            val uploadedFileKeys = mutableListOf<String>()
-            var uploadedCount = 0
+            // Step 3: Upload files to R2 concurrently (bounded), shrinking the window
+            // in which an iOS suspension can strand in-flight transfers. Each file is
+            // registered via /upload/complete as soon as its PUT lands, so a suspension
+            // mid-run keeps whatever already finished rather than dropping everything.
+            val semaphore = Semaphore(MAX_CONCURRENT_UPLOADS)
+            val uploadedCount = coroutineScope {
+                attachments.mapIndexed { index, attachment ->
+                    async {
+                        val uploadInfo = presignedResponse.uploads[index]
+                        logger.d { "Uploading ${attachment.fileName} to R2 (${attachment.size} bytes)" }
+                        semaphore.withPermit {
+                            val uploadResult = withStrikes {
+                                bugApi.uploadToPresignedUrl(
+                                    presignedUrl = uploadInfo.uploadUrl,
+                                    data = attachment.source,
+                                    contentType = attachment.mimeType ?: "application/octet-stream",
+                                    size = attachment.size,
+                                )
+                            }
+                            if (uploadResult.isFailure) {
+                                logger.e { "Failed to upload ${attachment.fileName}: ${uploadResult.exceptionOrNull()}" }
+                                return@withPermit false
+                            }
+                            val fileKey = uploadInfo.fileUrl.split("/").let { parts ->
+                                val bucketIndex = parts.indexOf("eng-dash-temp-logs-attachments")
+                                parts.subList(bucketIndex + 1, parts.size).joinToString("/")
+                            }
+                            logger.d { "Successfully uploaded ${attachment.fileName}, key: $fileKey" }
 
-            attachments.forEachIndexed { index, attachment ->
-                val uploadInfo = presignedResponse.uploads[index]
-                logger.d { "Uploading ${attachment.fileName} to R2 (${attachment.size} bytes)" }
-
-                // Upload to presigned URL using pre-read data
-                val uploadResult = bugApi.uploadToPresignedUrl(
-                    presignedUrl = uploadInfo.uploadUrl,
-                    data = attachment.source,
-                    contentType = attachment.mimeType ?: "application/octet-stream",
-                    size = attachment.size,
-                )
-
-                if (uploadResult.isSuccess) {
-                    // Extract file key from URL (exact pattern from test script)
-                    val fileKey = uploadInfo.fileUrl.split("/").let { parts ->
-                        val bucketIndex = parts.indexOf("eng-dash-temp-logs-attachments")
-                        parts.subList(bucketIndex + 1, parts.size).joinToString("/")
-                    }
-                    uploadedFileKeys.add(fileKey)
-                    uploadedCount++
-                    logger.d { "Successfully uploaded ${attachment.fileName}, key: $fileKey" }
-
-                    // Call upload complete immediately for this file
-                    try {
-                        val completeResult = bugApi.completeUpload(
-                            fileKey = fileKey,
-                            bugReportId = bugReportId,
-                            googleIdToken = googleIdToken
-                        )
-                        if (completeResult.isFailure) {
-                            logger.e { "Failed to complete upload for ${attachment.fileName}: ${completeResult.exceptionOrNull()}" }
-                            // Don't fail the whole process, just log the error
+                            val completeResult = withStrikes {
+                                bugApi.completeUpload(
+                                    fileKey = fileKey,
+                                    bugReportId = bugReportId,
+                                    googleIdToken = googleIdToken
+                                )
+                            }
+                            if (completeResult.isFailure) {
+                                logger.e { "Failed to complete upload for ${attachment.fileName}: ${completeResult.exceptionOrNull()}" }
+                            }
+                            true
                         }
-                    } catch (e: Exception) {
-                        logger.e(e) { "Error calling upload complete for ${attachment.fileName}" }
-                        // Continue with other files
                     }
-                } else {
-                    logger.e { "Failed to upload ${attachment.fileName}: ${uploadResult.exceptionOrNull()}" }
-                }
+                }.awaitAll().count { it }
             }
 
             logger.d { "Upload complete: $uploadedCount/${attachments.size} files uploaded successfully" }
@@ -710,6 +722,20 @@ class BugReportProcessor(
                 appendLine("watch_$index $watch")
             }
         }
+    }
+
+    private suspend fun <T> withStrikes(strikes: Int = 3, block: suspend () -> Result<T>): Result<T> {
+        var result: Result<T>? = null
+        repeat(strikes) {
+            result = block()
+            if (result.isSuccess) {
+                return result
+            } else {
+                logger.w(result.exceptionOrNull()) { "Attempt ${it + 1} failed: ${result.exceptionOrNull()?.message}" }
+                delay(1.seconds)
+            }
+        }
+        return result ?: Result.failure(Exception("Unknown error after $strikes attempts"))
     }
 }
 

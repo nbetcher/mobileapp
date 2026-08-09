@@ -27,7 +27,6 @@ import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MobileOff
-import androidx.compose.material.icons.filled.Shower
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material.icons.outlined.Lightbulb
 import androidx.compose.material3.Icon
@@ -72,16 +71,6 @@ private val FaqEntries: List<FaqEntry> = listOf(
                     "features. If you have any problems, we'd love if you report them to us with " +
                     "as much detail as possible. We'll fix it as soon as we can.\n\n" +
                     "Settings → Get Help → Report a bug (be sure to tap Index)"
-        ),
-    ),
-    FaqEntry(
-        "shower", Icons.Default.Shower,
-        "Can I wear it in the shower?",
-        ann(
-            "We don't recommend it. Index 01 is splash resistant but not waterproof " +
-                    "especially in hot or soapy water.\n\n" +
-                    "Water or soap may block the microphone hole, which reduces the " +
-                    "volume of recordings."
         ),
     ),
     FaqEntry(
@@ -254,7 +243,9 @@ private fun FaqTourPage(entry: FaqEntry, coreNav: CoreNav) {
         if (entry.image != null) {
             // Pages with a labeled photo (e.g. mic location) get a larger square
             // tile. PNG has a white background, so we fill the pink container
-            // first and draw the image with BlendMode.Multiply.
+            // first and draw the image with BlendMode.Multiply. Multiply needs a
+            // light base or the whole photo goes dark, so always use the light
+            // container color even in dark mode (MOB-8710).
             val bitmap = imageResource(entry.image)
             Box(
                 modifier = Modifier
@@ -263,7 +254,7 @@ private fun FaqTourPage(entry: FaqEntry, coreNav: CoreNav) {
                     .aspectRatio(1f),
             ) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
-                    drawRect(color = palette.primaryContainer)
+                    drawRect(color = LightPalette.primaryContainer)
                     val srcW = bitmap.width.toFloat()
                     val srcH = bitmap.height.toFloat()
                     val maxW = size.width * 0.92f

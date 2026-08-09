@@ -11,8 +11,10 @@ import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdater
 import io.rebble.libpebblecommon.connection.endpointmanager.LanguagePackInstallState
 import io.rebble.libpebblecommon.connection.endpointmanager.LanguagePackInstaller
 import io.rebble.libpebblecommon.database.BlobDbDatabaseManager
+import io.rebble.libpebblecommon.database.MillisecondInstant
 import io.rebble.libpebblecommon.database.dao.KnownWatchDao
 import io.rebble.libpebblecommon.database.entity.KnownWatchItem
+import io.rebble.libpebblecommon.database.entity.TransportType
 import io.rebble.libpebblecommon.di.ConnectionAnalyticsLogger
 import io.rebble.libpebblecommon.di.ConnectionCoroutineScope
 import io.rebble.libpebblecommon.di.ConnectionScope
@@ -22,6 +24,7 @@ import io.rebble.libpebblecommon.di.HackyProvider
 import io.rebble.libpebblecommon.di.LibPebbleCoroutineScope
 import io.rebble.libpebblecommon.metadata.WatchColor
 import io.rebble.libpebblecommon.metadata.WatchHardwarePlatform
+import io.rebble.libpebblecommon.services.FirmwareVersion
 import io.rebble.libpebblecommon.services.WatchInfo
 import io.rebble.libpebblecommon.web.FirmwareUpdateManager
 import com.russhwolf.settings.PropertiesSettings
@@ -39,7 +42,9 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
 import kotlin.time.Clock
+import kotlin.time.Instant
 import kotlinx.io.files.Path
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Test
 import kotlin.concurrent.atomics.AtomicBoolean
@@ -48,12 +53,15 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
 
 class WatchManagerTest {
+    // Watches present in the DB at WatchManager construction. Set before create().
+    private var seededKnownWatches: List<KnownWatchItem> = emptyList()
+
     private val knownWatchDao = object : KnownWatchDao {
         override suspend fun insertOrUpdate(watch: KnownWatchItem) {
         }
 
         override suspend fun knownWatches(): List<KnownWatchItem> {
-            return emptyList()
+            return seededKnownWatches
         }
 
         override suspend fun remove(transportIdentifier: String) {
@@ -64,7 +72,11 @@ class WatchManagerTest {
     }
     private val pebbleDeviceFactory = PebbleDeviceFactory()
     private val createPlatformIdentifier = object : CreatePlatformIdentifier {
-        override fun identifier(identifier: PebbleIdentifier, name: String): PlatformIdentifier {
+        override fun identifier(
+            identifier: PebbleIdentifier,
+            name: String,
+            lastAttemptFailed: Boolean,
+        ): PlatformIdentifier {
             return PlatformIdentifier.SocketPlatformIdentifier("addr")
         }
     }
@@ -91,6 +103,7 @@ class WatchManagerTest {
     private var totalConnections = 0
     private var connectSuccess = false
     private var exceededMax = false
+    private var lastPreviouslyConnected: Boolean? = null
 
     inner class TestPebbleConnector : PebbleConnector {
         private val _disconnected = CompletableDeferred<ConnectionFailureReason>()
@@ -102,7 +115,8 @@ class WatchManagerTest {
             _disconnected.complete(ConnectionFailureReason.FailedToConnect)
         }
 
-        override suspend fun connect(previouslyConnected: Boolean, lastError: ConnectionFailureReason?) {
+        override suspend fun connect(knownWatchProperties: KnownWatchProperties?, lastError: ConnectionFailureReason?) {
+            lastPreviouslyConnected = knownWatchProperties?.lastConnected != null
             activeConnections++
             totalConnections++
             if (activeConnections > 1) {
@@ -111,13 +125,14 @@ class WatchManagerTest {
             }
             _state.value = ConnectingPebbleState.Connecting(identifier)
             delay(1.milliseconds)
-            _state.value = ConnectingPebbleState.Negotiating(identifier)
+            _state.value = ConnectingPebbleState.Negotiating(identifier, null)
             delay(1.milliseconds)
             if (connectSuccess) {
                 _state.value = ConnectingPebbleState.Connected.ConnectedNotInPrf(
                     identifier = identifier,
                     watchInfo = TODO(),
                     services = TODO(),
+                    reversePpogVersion = null,
                 )
             } else {
                 _state.value = ConnectingPebbleState.Failed(identifier, ConnectionFailureReason.FailedToConnect)
@@ -138,7 +153,7 @@ class WatchManagerTest {
         override fun init(watchInfo: WatchInfo) {
         }
 
-        override fun checkForUpdates() {
+        override fun checkForUpdates(force: Boolean) {
         }
 
         override val availableUpdates: Flow<FirmwareUpdateCheckState>
@@ -149,14 +164,19 @@ class WatchManagerTest {
         override val firmwareUpdateState: StateFlow<FirmwareUpdater.FirmwareUpdateStatus>
             = MutableStateFlow(FirmwareUpdater.FirmwareUpdateStatus.NotInProgress.Idle())
 
-        override fun init(watchPlatform: WatchHardwarePlatform, slot: Int?) {
+        override fun init(
+            watchPlatform: WatchHardwarePlatform,
+            slot: Int?,
+            supportsResume: Boolean,
+            runningFwVersion: FirmwareVersion,
+        ) {
         }
 
         override fun sideloadFirmware(path: Path) {}
 
         override fun updateFirmware(update: FirmwareUpdateCheckResult.FoundUpdate) {}
 
-        override fun checkforFirmwareUpdate() {}
+        override fun checkforFirmwareUpdate(force: Boolean) {}
     }
     private val bluetoothStateProvider = object : BluetoothStateProvider {
         override fun init() {
@@ -198,7 +218,7 @@ class WatchManagerTest {
             TODO("Not yet implemented")
         }
 
-        override suspend fun checkForFirmwareUpdate(watch: WatchInfo): FirmwareUpdateCheckResult {
+        override suspend fun checkForFirmwareUpdate(watch: WatchInfo, force: Boolean): FirmwareUpdateCheckResult {
             TODO("Not yet implemented")
         }
 
@@ -311,5 +331,39 @@ class WatchManagerTest {
             watchManager.watches.first { totalConnections >= i && it.any { it is ConnectingPebbleDevice } }
         }
         assertFalse(exceededMax)
+    }
+
+    private fun seededWatch(lastConnected: MillisecondInstant?) = KnownWatchItem(
+        transportIdentifier = "addr",
+        transportType = TransportType.BluetoothLe,
+        name = name,
+        // BondedWatchSeeder writes these placeholder values for OS-bonded watches.
+        runningFwVersion = UNKNOWN_WATCH_SERIAL_OR_VERSION,
+        serial = UNKNOWN_WATCH_SERIAL_OR_VERSION,
+        connectGoal = true,
+        lastConnected = lastConnected,
+    )
+
+    /**
+     * A BondedWatchSeeder stub (never connected by this install, so `lastConnected == null`) must
+     * be treated as a FIRST connection — otherwise BlobDB.init() skips wiping the watch's blob DBs
+     * after a reinstall and stale weather/etc. records linger. Regression test for that.
+     */
+    @Test
+    fun seededWatchIsNotTreatedAsPreviouslyConnected() = runTest(timeout = 5.seconds) {
+        seededKnownWatches = listOf(seededWatch(lastConnected = null))
+        val watchManager = create(backgroundScope)
+        watchManager.init()
+        watchManager.watches.first { totalConnections >= 1 && it.any { it is ConnectingPebbleDevice } }
+        assertEquals(false, lastPreviouslyConnected)
+    }
+
+    @Test
+    fun watchWithPriorConnectionIsTreatedAsPreviouslyConnected() = runTest(timeout = 5.seconds) {
+        seededKnownWatches = listOf(seededWatch(lastConnected = MillisecondInstant(Instant.fromEpochMilliseconds(1_000))))
+        val watchManager = create(backgroundScope)
+        watchManager.init()
+        watchManager.watches.first { totalConnections >= 1 && it.any { it is ConnectingPebbleDevice } }
+        assertEquals(true, lastPreviouslyConnected)
     }
 }

@@ -15,6 +15,7 @@ import coredevices.ring.transcription.InferenceBoostProvider
 import coredevices.ring.transcription.NoOpInferenceBoostProvider
 import coredevices.util.transcription.CactusModelPathProvider
 import coredevices.ring.agent.AgentFactory
+import coredevices.ring.agent.LLMLocationProvider
 import coredevices.ring.agent.IndexAgentNenya
 import coredevices.ring.agent.McpSandboxAgentNenya
 import coredevices.ring.agent.SearchAgentNenya
@@ -22,7 +23,11 @@ import coredevices.ring.agent.BuiltinServletRepository
 import coredevices.ring.agent.ContextualActionPredictor
 import coredevices.ring.agent.ShareActionHandler
 import coredevices.ring.agent.ShortcutActionHandler
-import coredevices.ring.agent.builtin_servlets.reminders.ReminderFactory
+import coredevices.ring.agent.builtin_servlets.reminders.BuiltInReminderFeedItems
+import coredevices.ring.agent.builtin_servlets.reminders.BuiltInReminderIntegration
+import coredevices.ring.agent.builtin_servlets.reminders.ReminderIntegrationFactory
+import coredevices.ring.agent.builtin_servlets.reminders.createBuiltInReminderIntegration
+import coredevices.ring.agent.integrations.DelegatedIntegrationItems
 import coredevices.ring.agent.integrations.GTasksIntegration
 import coredevices.ring.agent.integrations.UIEmailIntegration
 import coredevices.ring.api.ApiConfig
@@ -39,8 +44,7 @@ import coredevices.ring.database.room.repository.RecordingProcessingTaskReposito
 import coredevices.ring.database.room.repository.ItemRepository
 import coredevices.ring.database.room.repository.ListRepository
 import coredevices.ring.database.room.repository.RecordingRepository
-import coredevices.ring.agent.builtin_servlets.reminders.cancelBuiltInReminder
-import coredevices.ring.database.room.dao.LocalReminderDao
+import coredevices.ring.reminders.ReminderCompleter
 import coredevices.ring.reminders.ReminderDeepLinkResolver
 import coredevices.ring.service.indexfeed.DefaultListsBootstrap
 import coredevices.ring.service.indexfeed.IndexFeedSyncService
@@ -161,14 +165,21 @@ val experimentalModule = module {
     }
     singleOf(::RecordingProcessingTaskRepository)
     single {
-        val localReminderDao = get<LocalReminderDao>()
-        ItemRepository(get()) { cancelBuiltInReminder(it, localReminderDao) }
+        val builtInReminders = get<BuiltInReminderIntegration>()
+        ItemRepository(
+            get(),
+            cancelReminder = { builtInReminders.cancelReminder(it) },
+            rescheduleReminder = { id, recordingId, newTime ->
+                builtInReminders.rescheduleReminder(id, recordingId, newTime)
+            },
+        )
     }
     singleOf(::ListRepository)
     singleOf(::DefaultListsBootstrap)
     singleOf(::IndexFeedSyncService)
     singleOf(::ItemFactory)
     singleOf(::ReminderDeepLinkResolver)
+    singleOf(::ReminderCompleter)
     singleOf(::PreferencesImpl) binds arrayOf(Preferences::class, BasePreferences::class)
     singleOf(::RingTraceSession)
     singleOf(::TraceSessionExporter)
@@ -212,6 +223,7 @@ val experimentalModule = module {
     singleOf(::ExperimentalDevices)
     singleOf(::PrefsCollectionIndexStorage) bind CollectionIndexStorage::class
     factory { HackyPermissionRequesterProvider { get<PermissionRequester>() } }
+    singleOf(::LLMLocationProvider)
     factory { p -> AgentNenya(get(), p.getOrNull() ?: "", p.getOrNull() ?: NenyaModel.Default, p.getOrNull() ?: emptyList()) }
     factory { p -> IndexAgentNenya(get(), p.getOrNull() ?: emptyList()) }
     factory { p -> McpSandboxAgentNenya(get(), p.getOrNull() ?: NenyaModel.Default, p.getOrNull() ?: emptyList()) }
@@ -227,10 +239,12 @@ val experimentalModule = module {
     singleOf(::RingHacksDelegate) bind KMPHaversineHacksDelegate::class
     singleOf(::McpSandboxRepository)
     singleOf(::BuiltinServletRepository) bind ServletRepository::class
-
-    factoryOf(::GTasksIntegration)
+    factory { GTasksIntegration(get()) }
     factoryOf(::UIEmailIntegration)
-    singleOf(::ReminderFactory)
+    single { createBuiltInReminderIntegration() }
+    singleOf(::BuiltInReminderFeedItems)
+    singleOf(::DelegatedIntegrationItems)
+    singleOf(::ReminderIntegrationFactory)
     singleOf(::ContextualActionPredictor)
     singleOf(::ShortcutActionHandler)
     singleOf(::ShareActionHandler)

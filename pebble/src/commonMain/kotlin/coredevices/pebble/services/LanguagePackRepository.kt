@@ -4,6 +4,7 @@ import androidx.compose.ui.text.intl.Locale
 import co.touchlab.kermit.Logger
 import coredevices.pebble.firmware.isCoreDevice
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
+import io.rebble.libpebblecommon.connection.endpointmanager.InstalledLanguagePack
 import io.rebble.libpebblecommon.metadata.WatchHardwarePlatform
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
@@ -33,12 +34,34 @@ class LanguagePackRepository(
 
     suspend fun languagePacksForWatch(watch: ConnectedPebbleDevice): List<LanguagePack> = withContext(Dispatchers.IO) {
         val locale = Locale.current.toLanguageTag()
-        val hardwarePlatform = watch.watchInfo.platform
-        languagePacks
-            .filter { it.hardware == null || it.hardware == hardwarePlatform.languagePackPlatform().revision }
+        val platform = watch.watchInfo.platform
+        val revision = platform.revision
+        val fallbackRevision = platform.languagePackPlatform().revision
 
+        // Prefer packs built for this exact hardware; fall back to the silk-compatible
+        // pack for any locale the exact hardware doesn't provide.
+        val exactLocales = languagePacks.filter { it.hardware == revision }.map { it.isoLocal }.toSet()
+        languagePacks
+            .filter {
+                when (it.hardware) {
+                    revision -> true
+                    null, fallbackRevision -> it.isoLocal !in exactLocales
+                    else -> false
+                }
+            }
             .sortedByDescending { it.isoLocal.take(2) == locale.take(2) }
             .sortedByDescending { it.isoLocal == locale }
+    }
+
+    /**
+     * Friendly display name for a language pack read back from the watch, which only reports the
+     * raw ISO locale + version.
+     */
+    fun displayNameForInstalled(installed: InstalledLanguagePack): String {
+        val pack = languagePacks.firstOrNull { it.isoLocal == installed.isoLocal && it.version == installed.version }
+            ?: languagePacks.firstOrNull { it.isoLocal == installed.isoLocal }
+        return pack?.let { "${it.localName} (${it.name}) v${installed.version}" }
+            ?: "${installed.isoLocal} (v${installed.version})"
     }
 }
 
@@ -1886,71 +1909,71 @@ private val LanguagePacksJson = """
     },
     {
       "ISOLocal": "ar_SA",
-      "file": "https://github.com/user-attachments/files/28068835/ar_SA.pbl.zip",
+      "file": "https://github.com/kaluaim/PebbleOS/releases/download/ar_SA-v1/ar_SA.pbl",
       "firmware": "4.0.0",
       "hardware": "asterix",
       "id": "ar_SA_v1",
-      "localName": "Arabic",
+      "localName": "العربية",
       "name": "Arabic",
       "version": 1
     },
     {
       "ISOLocal": "ar_SA",
-      "file": "https://github.com/user-attachments/files/28068835/ar_SA.pbl.zip",
+      "file": "https://github.com/kaluaim/PebbleOS/releases/download/ar_SA-v1/ar_SA.pbl",
       "firmware": "4.0.0",
       "hardware": "obelix_evt",
       "id": "ar_SA_v1",
-      "localName": "Arabic",
+      "localName": "العربية",
       "name": "Arabic",
       "version": 1
     },
     {
       "ISOLocal": "ar_SA",
-      "file": "https://github.com/user-attachments/files/28068835/ar_SA.pbl.zip",
+      "file": "https://github.com/kaluaim/PebbleOS/releases/download/ar_SA-v1/ar_SA.pbl",
       "firmware": "4.0.0",
       "hardware": "obelix_dvt",
       "id": "ar_SA_v1",
-      "localName": "Arabic",
+      "localName": "العربية",
       "name": "Arabic",
       "version": 1
     },
     {
       "ISOLocal": "ar_SA",
-      "file": "https://github.com/user-attachments/files/28068835/ar_SA.pbl.zip",
+      "file": "https://github.com/kaluaim/PebbleOS/releases/download/ar_SA-v1/ar_SA.pbl",
       "firmware": "4.0.0",
       "hardware": "obelix_pvt",
       "id": "ar_SA_v1",
-      "localName": "Arabic",
+      "localName": "العربية",
       "name": "Arabic",
       "version": 1
     },
     {
       "ISOLocal": "ar_SA",
-      "file": "https://github.com/user-attachments/files/28068835/ar_SA.pbl.zip",
+      "file": "https://github.com/kaluaim/PebbleOS/releases/download/ar_SA-v1/ar_SA.pbl",
       "firmware": "4.0.0",
       "hardware": "getafix_evt",
       "id": "ar_SA_v1",
-      "localName": "Arabic",
+      "localName": "العربية",
       "name": "Arabic",
       "version": 1
     },
     {
       "ISOLocal": "ar_SA",
-      "file": "https://github.com/user-attachments/files/28068835/ar_SA.pbl.zip",
+      "file": "https://github.com/kaluaim/PebbleOS/releases/download/ar_SA-v1/ar_SA.pbl",
       "firmware": "4.0.0",
       "hardware": "getafix_dvt",
       "id": "ar_SA_v1",
-      "localName": "Arabic",
+      "localName": "العربية",
       "name": "Arabic",
       "version": 1
     },
     {
       "ISOLocal": "ar_SA",
-      "file": "https://github.com/user-attachments/files/28068835/ar_SA.pbl.zip",
+      "file": "https://github.com/kaluaim/PebbleOS/releases/download/ar_SA-v1/ar_SA.pbl",
       "firmware": "4.0.0",
       "hardware": "getafix_dvt2",
       "id": "ar_SA_v1",
-      "localName": "Arabic",
+      "localName": "العربية",
       "name": "Arabic",
       "version": 1
     }

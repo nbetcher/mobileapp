@@ -56,6 +56,9 @@ import coredevices.ring.agent.integrations.obsidian.ObsidianPreferences
 import coredevices.ring.data.IntegrationDefinition
 import coredevices.ring.database.Preferences
 import coredevices.ui.M3Dialog
+import coredevices.util.Permission
+import coredevices.util.PermissionRequester
+import coredevices.util.PermissionResult
 import coredevices.util.Platform
 import coredevices.util.isAndroid
 import coredevices.util.rememberUiContext
@@ -128,6 +131,19 @@ fun AddIntegration(coreNav: CoreNav) {
                     }
                 }
             }
+            item {
+                ListItem(
+                    headlineContent = { Text(PHONE_CALENDAR_TITLE) },
+                    supportingContent = { Text("Calendar") },
+                    modifier = Modifier.clickable {
+                        dialog = {
+                            PhoneCalendarDialog(
+                                onDismiss = { dialog = null }
+                            )
+                        }
+                    }
+                )
+            }
             if (platform.isAndroid) {
                 item {
                     val def = remember { TASKER_DEFINITION }
@@ -167,6 +183,88 @@ private sealed class SignInState {
     data object SigningIn : SignInState()
     data object Success : SignInState()
     data class Error(val message: String) : SignInState()
+}
+
+const val PHONE_CALENDAR_TITLE = "Phone Calendar"
+
+/**
+ * Connects the opt-in Phone Calendar integration: "connecting" means granting calendar
+ * permission and flipping [Preferences.phoneCalendarEnabled]. The agent's calendar tool stays
+ * hidden until both are true.
+ */
+@Composable
+fun PhoneCalendarDialog(
+    onDismiss: () -> Unit
+) {
+    val preferences = koinInject<Preferences>()
+    val permissionRequester = koinInject<PermissionRequester>()
+    val uiContext = rememberUiContext()
+    var state by remember { mutableStateOf<SignInState>(SignInState.Idle) }
+    val scope = rememberCoroutineScope()
+
+    M3Dialog(
+        onDismissRequest = onDismiss,
+        title = { Text(PHONE_CALENDAR_TITLE) },
+        buttons = {
+            TextButton(onClick = onDismiss) {
+                Text(if (state is SignInState.Success) "Done" else "Cancel")
+            }
+            if (state !is SignInState.Success) {
+                Spacer(Modifier.width(8.dp))
+                TextButton(
+                    enabled = state !is SignInState.SigningIn,
+                    onClick = {
+                        val ctx = uiContext ?: return@TextButton
+                        state = SignInState.SigningIn
+                        scope.launch {
+                            state = when (permissionRequester.requestPermission(Permission.Calendar, ctx)) {
+                                PermissionResult.Granted -> {
+                                    preferences.setPhoneCalendarEnabled(true)
+                                    SignInState.Success
+                                }
+                                PermissionResult.RejectedForever -> {
+                                    // The system won't show the prompt again; send the user to
+                                    // app settings to grant it manually.
+                                    permissionRequester.openPermissionsScreen(ctx)
+                                    SignInState.Error(
+                                        "Calendar access is blocked. Allow calendar access for the app in system settings, then try again."
+                                    )
+                                }
+                                else -> SignInState.Error(
+                                    "Calendar access was not granted. Index can only add events to your calendar with this permission."
+                                )
+                            }
+                        }
+                    }
+                ) {
+                    Text("Connect")
+                }
+            }
+        }
+    ) {
+        when (val s = state) {
+            is SignInState.Idle -> {
+                Text(
+                    "Connect your phone's calendar so Index can add events when you ask. " +
+                        "This grants the app calendar access."
+                )
+            }
+            is SignInState.SigningIn -> {
+                Box(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator()
+                }
+            }
+            is SignInState.Success -> {
+                Text("Phone Calendar connected.")
+            }
+            is SignInState.Error -> {
+                Text(s.message, color = MaterialTheme.colorScheme.error)
+            }
+        }
+    }
 }
 
 @Composable
@@ -332,6 +430,7 @@ fun ObsidianDialog(
 
     var mode by remember { mutableStateOf(if (alreadyConfigured) integration.currentMode() else ObsidianMode.TIMESTAMPED_FILES) }
     var subfolder by remember { mutableStateOf(if (alreadyConfigured) integration.currentSubfolder().ifEmpty { ObsidianPreferences.DEFAULT_SUBFOLDER } else ObsidianPreferences.DEFAULT_SUBFOLDER) }
+    var customTag by remember { mutableStateOf(if (alreadyConfigured) integration.currentCustomTag() else "") }
     var notes by remember { mutableStateOf<List<String>>(emptyList()) }
     var selectedNote by remember { mutableStateOf(if (alreadyConfigured) integration.currentTargetNote().ifEmpty { null } else null) }
 
@@ -348,6 +447,7 @@ fun ObsidianDialog(
                 if (integration.signIn(uiContext)) {
                     vaultName = integration.vaultDisplayName() ?: "Obsidian vault"
                     notes = integration.listNotes()
+                    selectedNote = null
                 } else {
                     error = "No folder selected."
                 }
@@ -376,6 +476,7 @@ fun ObsidianDialog(
                                 mode = mode,
                                 targetNote = selectedNote ?: "",
                                 subfolder = subfolder,
+                                customTag = customTag,
                             )
                             preferences.setNoteProvider(NoteProvider.Obsidian)
                             onDismiss()
@@ -422,6 +523,8 @@ fun ObsidianDialog(
                     onModeChange = { mode = it },
                     subfolder = subfolder,
                     onSubfolderChange = { subfolder = it },
+                    customTag = customTag,
+                    onCustomTagChange = { customTag = it },
                     notes = notes,
                     selectedNote = selectedNote,
                     onSelectNote = { selectedNote = it },
@@ -445,6 +548,8 @@ private fun ObsidianModeSelector(
     onModeChange: (ObsidianMode) -> Unit,
     subfolder: String,
     onSubfolderChange: (String) -> Unit,
+    customTag: String,
+    onCustomTagChange: (String) -> Unit,
     notes: List<String>,
     selectedNote: String?,
     onSelectNote: (String) -> Unit,
@@ -476,6 +581,16 @@ private fun ObsidianModeSelector(
                     label = { Text("Subfolder") },
                     placeholder = { Text(ObsidianPreferences.DEFAULT_SUBFOLDER) },
                     supportingText = { Text("A folder inside your vault. Created if it doesn't exist.") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = customTag,
+                    onValueChange = onCustomTagChange,
+                    label = { Text("Extra tag (optional)") },
+                    placeholder = { Text("fleeting") },
+                    supportingText = { Text("Added to each new note's frontmatter alongside #index.") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )

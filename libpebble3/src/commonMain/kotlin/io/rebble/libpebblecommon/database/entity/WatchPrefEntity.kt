@@ -203,8 +203,6 @@ enum class BoolWatchPref(
     Backlight("lightEnabled", "Backlight", true),
     AmbientLightSensor("lightAmbientSensorEnabled", "Ambient Light Sensor", true, description = "Only enable backlight when in a dark environment (using light sensor)"),
     BacklightMotion("lightMotion", "Backlight Motion", true, description = "Turn on backlight by flicking wrist"),
-    DynamicBacklightIntensity("lightDynamicIntensity", "Dynamic Backlight Intensity", true, description = "Adjust backlight intensity automatically to match environment (using light sensor)"),
-    LanguageEnglish("langEnglish", "Language: English", false),
     TimelineQuickViewEnabled("timelineQuickViewEnabled", "Timeline Quick View", true, description = "Show upcoming events below watchface"),
     QuietTimeManuallyEnabled("dndManuallyEnabled", "Quiet Time - Manual", false, description = "Notifications are muted (and will stay on-screen without a timeout) when in quiet time"),
     CalendarAwareQuietTime("dndSmartEnabled", "Quiet Time - Calendar Aware", false, description = "Automatically enable Quiet Time during calendar events"),
@@ -213,6 +211,7 @@ enum class BoolWatchPref(
     NotificationBacklight("notifBacklight", "Notifications - Backlight", true, description = "Turn on the backlight when a notification arrives"),
     MenuScrollWrapAround("menuScrollWrapAround", "Menu Scrolling - Wrap Around", false, description = "Up button will go to the bottom of menus"),
     QuietTimeMotionBacklight("dndMotionBacklight", "Quiet Time - Motion Backlight", true, description = "Enable motion backlight during Quiet Time"),
+    QuietTimeAutoDismiss("dndAutoDismiss", "Quiet Time - Auto Dismiss", false, description = "When notifications are shown in Quiet Time, automatically dismiss them instead of leaving them on-screen"),
     MusicShowVolumeControls("musicShowVolumeControls", "Show Volume Controls", true),
     MusicShowProgressBar("musicShowProgressBar", "Show Progress Bar", true),
     ;
@@ -363,6 +362,43 @@ enum class BacklightTouchWakeMode(override val code: UByte, override val display
     Off(2u, "Off"),
 }
 
+// Matches BacklightDynamicMode in pebble-firmware:src/fw/shell/prefs.h. Off disables dynamic
+// scaling; the other modes select how bright the environment must get before the backlight
+// ramps to max intensity (Bright ramps up earliest, Dim latest).
+enum class BacklightDynamicMode(override val code: UByte, override val displayName: String) : WatchPrefEnum {
+    Off(0u, "Off"),
+    Bright(1u, "Bright"),
+    Standard(2u, "Standard"),
+    Dim(3u, "Dim"),
+}
+
+// Matches BacklightPreset in pebble-firmware:src/fw/shell/prefs.h. Each preset bundles the
+// ambient sensor, dynamic mode, intensity and timeout settings; Advanced leaves them to be set
+// individually.
+enum class BacklightPresetMode(override val code: UByte, override val displayName: String) : WatchPrefEnum {
+    MaxBrightness(0u, "Max Brightness"),
+    Standard(1u, "Standard"),
+    BatterySaver(2u, "Battery Saver"),
+    Advanced(3u, "Advanced"),
+}
+
+// Built-in firmware languages. Codes MUST match the ShellLanguage enum in
+// pebble-firmware:src/fw/shell/prefs.h. "Custom" (0) means the watch uses whatever language pack
+// was uploaded via PutBytes (see LanguagePackInstaller); the rest are baked into the firmware.
+// Labels mirror the on-watch Settings > Display > Language menu.
+enum class WatchLanguage(override val code: UByte, override val displayName: String) : WatchPrefEnum {
+    Custom(0u, "Custom (Language Pack)"),
+    English(1u, "English"),
+    Catalan(2u, "Català"),
+    German(3u, "Deutsch"),
+    Spanish(4u, "Español"),
+    French(5u, "Français"),
+    Italian(6u, "Italiano"),
+    Dutch(7u, "Nederlands"),
+    Portuguese(8u, "Português"),
+    Polish(9u, "Polski"),
+}
+
 enum class EnumWatchPref(
     override val id: String,
     override val displayName: String,
@@ -448,6 +484,13 @@ enum class EnumWatchPref(
         options = MotionSensitivityLevel.entries,
         isDebugSetting = true,
     ),
+    BacklightPreset(
+        id = "lightPreset",
+        displayName = "Backlight Preset",
+        description = "Bundles the ambient sensor, dynamic backlight, brightness and timeout into one mode. Choose Advanced to configure them individually.",
+        defaultValue = BacklightPresetMode.Standard,
+        options = BacklightPresetMode.entries,
+    ),
     BacklightIntensity(
         id = "lightIntensity",
         displayName = "Backlight Intensity",
@@ -455,12 +498,26 @@ enum class EnumWatchPref(
         options = BacklightIntensityLevel.entries,
         description = "Maximum backlight brightness when on",
     ),
+    DynamicBacklightMode(
+        id = "lightDynamicMode",
+        displayName = "Dynamic Backlight",
+        description = "Automatically adjust backlight brightness to match your environment (using light sensor). Dimmer modes stay dimmer in bright light.",
+        defaultValue = BacklightDynamicMode.Standard,
+        options = BacklightDynamicMode.entries,
+    ),
     BacklightTouch(
         id = "lightTouch",
         displayName = "Backlight on Tap",
         description = "Turn on backlight when tapping the screen",
         defaultValue = BacklightTouchWakeMode.DoubleTap,
         options = BacklightTouchWakeMode.entries,
+    ),
+    Language(
+        id = "language",
+        displayName = "Language",
+        description = "Built-in firmware language. Choose Custom to use an uploaded language pack.",
+        defaultValue = WatchLanguage.Custom,
+        options = WatchLanguage.entries,
     ),
     ;
 
@@ -497,20 +554,9 @@ enum class NumberWatchPref(
         id = "lightAmbientThreshold",
         displayName = "Ambient Light Threshold",
         description = "Controls how low ambient light needs to be to enable backlight (if using Ambient Light Sensor)",
-        defaultValue = 150,
+        defaultValue = 800,
         type = WatchPrefType.TypeUInt32,
         min = 1,
-        max = 4096,
-        unit = "",
-        isDebugSetting = true,
-    ),
-    DynamicBacklightMinThreshold(
-        id = "dynBacklightMinThreshold",
-        displayName = "Dynamic Backlight Min Threshold",
-        description = "Controls how ambient light sensor controls backlight intensity (if using Dynamic Backlight Intensity)",
-        defaultValue = 5,
-        type = WatchPrefType.TypeUInt32,
-        min = 0,
         max = 4096,
         unit = "",
         isDebugSetting = true,

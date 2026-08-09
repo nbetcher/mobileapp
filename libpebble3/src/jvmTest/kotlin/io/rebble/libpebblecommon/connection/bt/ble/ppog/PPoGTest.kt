@@ -3,8 +3,6 @@ package io.rebble.libpebblecommon.connection.bt.ble.ppog
 import io.ktor.utils.io.availableForRead
 import io.ktor.utils.io.readByteArray
 import io.rebble.libpebblecommon.BleConfig
-import io.rebble.libpebblecommon.BleConfigFlow
-import io.rebble.libpebblecommon.LibPebbleConfig
 import io.rebble.libpebblecommon.asFlow
 import io.rebble.libpebblecommon.connection.ConnectionException
 import io.rebble.libpebblecommon.connection.PebbleProtocolStreams
@@ -38,7 +36,7 @@ class PPoGTest {
         }
     }
     val bleConfig = BleConfig(
-        reversedPPoG = false,
+        legacyReversedPPoG = false,
     )
     val blePlatformConfig = BlePlatformConfig(
         initialMtu = 23,
@@ -92,6 +90,28 @@ class PPoGTest {
         ppog = PPoG(ppStreams, ppogStreams, sender, bleConfigFlow, blePlatformConfig, scope)
         ppog.run(false)
         init()
+        testScheduler.advanceTimeBy(30.seconds)
+    }
+
+    @Test
+    fun reversedInitRespondsToWatchResetRequest() = runTest {
+        val scope = ConnectionCoroutineScope(backgroundScope.coroutineContext)
+        ppog = PPoG(ppStreams, ppogStreams, sender, bleConfigFlow, blePlatformConfig, scope)
+        ppog.run(reversed = true)
+
+        assertOutboundPPoGPacket(PPoGPacket.ResetRequest(sequence = 0, ppogVersion = PPoGVersion.ONE))
+
+        // Watch gave up on our reset request and started its own.
+        receivePacket(PPoGPacket.ResetRequest(sequence = 0, ppogVersion = PPoGVersion.ONE))
+        assertOutboundPPoGPacket(
+            PPoGPacket.ResetComplete(sequence = 0, rxWindow = 19, txWindow = 20)
+        )
+        receivePacket(PPoGPacket.ResetComplete(sequence = 0, rxWindow = 19, txWindow = 20))
+
+        // Connection is open: pebble protocol data now flows.
+        val data = randomBytes()
+        receivePacket(PPoGPacket.Data(sequence = 0, data = data))
+        assertInboundPPBytes(data)
         testScheduler.advanceTimeBy(30.seconds)
     }
 

@@ -13,7 +13,6 @@ import coredevices.ring.ui.screens.indexfeed.AllAnswers
 import coredevices.ring.ui.screens.indexfeed.AllLists
 import coredevices.ring.ui.screens.indexfeed.FullFeed
 import coredevices.ring.ui.screens.indexfeed.ObjectDetail
-import coredevices.ring.ui.screens.notes.ReminderDetails
 import coredevices.ring.ui.screens.recording.RecordingDetails
 import coredevices.ring.ui.screens.settings.NotionOAuthResult
 import coredevices.ring.ui.screens.settings.IndexSettings
@@ -32,8 +31,6 @@ interface RingRoute : CoreRoute
 object RingRoutes {
     @Serializable
     class RecordingDetails(val recordingId: Long) : RingRoute
-    @Serializable
-    class ReminderDetails(val reminderId: Int) : RingRoute
     /** Detail page for an item (`note`/`reminder`/`scheduled`/`message`/
      *  `answer`/`action_log`) or a list. The id is the Firestore doc id.
      *  When [startEditing] is true and the object is a list, the screen
@@ -70,16 +67,19 @@ object RingRoutes {
     const val OBJECT_DEEP_LINK_ID_PARAM = "id"
     fun objectDeepLink(objectId: String) =
         "pebblecore://$OBJECT_DEEP_LINK_HOST/$OBJECT_DEEP_LINK_PATH?$OBJECT_DEEP_LINK_ID_PARAM=$objectId"
+
+    /** Deep link that opens the [RecordingDetails] screen for a local recording.
+     *  Used by the Index notifications so tapping e.g. a completed-answer
+     *  notification opens that recording. Parsed by `CoreDeepLinkHandler`. */
+    const val RECORDING_DEEP_LINK_PATH = "recording"
+    fun recordingDeepLink(recordingId: Long) =
+        "pebblecore://$OBJECT_DEEP_LINK_HOST/$RECORDING_DEEP_LINK_PATH?$OBJECT_DEEP_LINK_ID_PARAM=$recordingId"
 }
 
 fun NavGraphBuilder.addRingRoutes(coreNav: CoreNav) {
     composable<RingRoutes.RecordingDetails> {
         val route: RingRoutes.RecordingDetails = it.toRoute()
         RecordingDetails(route.recordingId, coreNav)
-    }
-    composable<RingRoutes.ReminderDetails> {
-        val route: RingRoutes.ReminderDetails = it.toRoute()
-        ReminderDetails(coreNav, route.reminderId)
     }
     composable<RingRoutes.ObjectDetails> {
         val route: RingRoutes.ObjectDetails = it.toRoute()

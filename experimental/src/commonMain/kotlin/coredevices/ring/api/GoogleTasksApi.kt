@@ -1,5 +1,6 @@
 package coredevices.ring.api
 
+import co.touchlab.kermit.Logger
 import coredevices.api.ApiClient
 import io.ktor.client.call.body
 import io.ktor.client.request.bearerAuth
@@ -7,11 +8,12 @@ import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
+import kotlinx.datetime.LocalDate
 import kotlinx.serialization.Serializable
-import kotlin.time.Instant
 
 @Serializable
 data class GoogleTask(
@@ -39,10 +41,11 @@ class GoogleTasksApi(config: ApiConfig) : ApiClient(config.version) {
         val SCOPES = listOf("https://www.googleapis.com/auth/tasks")
     }
 
-    suspend fun createTask(token: String, title: String, due: Instant?, listId: String?): GoogleTask {
+    suspend fun createTask(token: String, title: String, due: LocalDate?, listId: String?): GoogleTask {
         val body = buildMap {
             put("title", title)
-            due?.let { put("due", it.toString()) }
+            // Tasks records only the date; midnight UTC is the form it normalizes `due` to.
+            due?.let { put("due", "${it}T00:00:00.000Z") }
         }
         val list = listId ?: "@default"
         val res = client.post("$baseUrl/lists/$list/tasks") {
@@ -50,6 +53,7 @@ class GoogleTasksApi(config: ApiConfig) : ApiClient(config.version) {
             contentType(ContentType.Application.Json)
             setBody(body)
         }
+        Logger.withTag("GoogleTasksApi").d { "Create task response: ${res.bodyAsText()}" }
         if (!res.status.isSuccess()) {
             error("Failed to create Google Task: ${res.status}")
         }

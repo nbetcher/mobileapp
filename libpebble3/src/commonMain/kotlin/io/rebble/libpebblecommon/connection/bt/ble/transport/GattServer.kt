@@ -8,8 +8,6 @@ import io.rebble.libpebblecommon.connection.bt.BluetoothState
 import io.rebble.libpebblecommon.connection.bt.BluetoothStateProvider
 import io.rebble.libpebblecommon.connection.bt.ble.BlePlatformConfig
 import io.rebble.libpebblecommon.connection.bt.ble.pebble.SERVER_META_RESPONSE
-import io.rebble.libpebblecommon.database.dao.KnownWatchDao
-import io.rebble.libpebblecommon.database.entity.TransportType
 import io.rebble.libpebblecommon.di.LibPebbleCoroutineScope
 import kotlinx.coroutines.channels.SendChannel
 import kotlinx.coroutines.flow.Flow
@@ -28,6 +26,7 @@ enum class SendResult {
 
 expect class GattServer {
     suspend fun addServices()
+    suspend fun removeServices()
     suspend fun closeServer()
     val characteristicReadRequest: Flow<ServerCharacteristicReadRequest>
 
@@ -43,32 +42,30 @@ expect class GattServer {
 }
 
 class GattServerManager(
-    private val config: BleConfigFlow,
     private val libPebbleCoroutineScope: LibPebbleCoroutineScope,
     private val bluetoothStateProvider: BluetoothStateProvider,
     private val appContext: AppContext,
     private val bleConfigFlow: BleConfigFlow,
     private val blePlatformConfig: BlePlatformConfig,
-    private val knownWatchDao: KnownWatchDao,
 ) {
     private val serverMutex = Mutex()
     private val logger = Logger.withTag("GattServerManager")
     private var gattServer: GattServer? = null
+    private val registeredDevices = mutableSetOf<PebbleBleIdentifier>()
+    private var servicesAdded = false
 
     fun init() {
+        // Eagerly open the GATT server (create the platform manager, call
+        // initServer) as soon as BT is enabled. On iOS the CBPeripheralManager
+        // opts into state restoration via CBPeripheralManagerOptionRestoreIdentifierKey,
+        // and Apple requires the manager to be constructed early — otherwise
+        // willRestoreState never fires and pending BT events (subscribes,
+        // writes from a paired watch) are silently dropped.
         libPebbleCoroutineScope.launch {
             bluetoothStateProvider.state.collect { bluetooth ->
                 logger.d("Bluetooth state: $bluetooth")
                 when (bluetooth) {
-                    BluetoothState.Enabled -> {
-                        val hasBleWatch = knownWatchDao.knownWatches()
-                            .any { it.transportType == TransportType.BluetoothLe }
-                        if (hasBleWatch) {
-                            openIfNeeded()
-                        } else {
-                            logger.d("no BLE watches registered, skipping GATT server pre-registration")
-                        }
-                    }
+                    BluetoothState.Enabled -> openIfNeeded()
                     BluetoothState.Disabled -> {
                         if (blePlatformConfig.closeGattServerWhenBtDisabled) {
                             close()
@@ -83,21 +80,38 @@ class GattServerManager(
         identifier: PebbleBleIdentifier,
         sendChannel: SendChannel<ByteArray>
     ): Boolean {
-        if (gattServer == null && bluetoothStateProvider.state.value == BluetoothState.Enabled) {
-            logger.w("Trying to open gatt server to register device. This happens on first pairing of a BLE watch, or after bluetooth permission is just granted.")
-            openIfNeeded()
+        if (bluetoothStateProvider.state.value != BluetoothState.Enabled) return false
+        openIfNeeded()
+        val gs = gattServer ?: return false
+        gs.registerDevice(identifier, sendChannel)
+        registeredDevices.add(identifier)
+        serverMutex.withLock {
+            if (!servicesAdded) {
+                logger.d("adding forward-PPoG services for first registered device")
+                gs.addServices()
+                servicesAdded = true
+            }
         }
-        val gs = gattServer
-        if (gs != null) {
-            gs.registerDevice(identifier, sendChannel)
-            return true
-        } else {
-            return false
-        }
+        return true
     }
 
     fun unregisterDevice(identifier: PebbleBleIdentifier) {
         gattServer?.unregisterDevice(identifier)
+        registeredDevices.remove(identifier)
+        // Don't remove services - the churn seems to be breaking connectivity
+//        if (registeredDevices.isEmpty()) {
+//            libPebbleCoroutineScope.launch {
+//                serverMutex.withLock {
+//                    // Re-check under the lock — another registerDevice may have
+//                    // slotted in between the map removal above and this coroutine.
+//                    if (registeredDevices.isEmpty() && servicesAdded) {
+//                        logger.d("removing forward-PPoG services (no registered devices)")
+//                        gattServer?.removeServices()
+//                        servicesAdded = false
+//                    }
+//                }
+//            }
+//        }
     }
 
     suspend fun sendData(
@@ -122,15 +136,15 @@ class GattServerManager(
     }
 
     private suspend fun openIfNeeded() {
-        if (config.value.reversedPPoG) {
-            return
-        }
         serverMutex.withLock {
             if (gattServer != null) return@withLock
             logger.d("open gatt server")
             gattServer = openGattServer(appContext, bleConfigFlow, libPebbleCoroutineScope)
             gattServer?.initServer()
-            gattServer?.addServices()
+            // Note: addServices() intentionally NOT called here. Services are
+            // added lazily by registerDevice() on the first forward-PPoG
+            // device. See init() for the reasoning around eager
+            // CBPeripheralManager construction on iOS.
             libPebbleCoroutineScope.launch {
                 gattServer?.characteristicReadRequest?.collect {
                     logger.d("sending meta response")
@@ -146,6 +160,7 @@ class GattServerManager(
             val gs = gattServer ?: return@withLock
             gs.closeServer()
             gattServer = null
+            servicesAdded = false
         }
     }
 }

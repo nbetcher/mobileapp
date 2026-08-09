@@ -32,10 +32,10 @@ val ItemMetadata.kind: String get() = when (this) {
     is ItemMetadata.Reminder -> "reminder"
     is ItemMetadata.Scheduled -> "scheduled"
     is ItemMetadata.Message -> "message"
-    is ItemMetadata.CalendarEvent -> "calendar_event"
     is ItemMetadata.Answer -> "answer"
     is ItemMetadata.ActionLog -> "action_log"
     is ItemMetadata.McpCall -> "mcp_call"
+    is ItemMetadata.DelegatedToIntegration -> "delegated"
     ItemMetadata.Note -> "note"
     ItemMetadata.Checklist -> "checklist"
 }
@@ -56,6 +56,7 @@ private fun ItemMetadata.toFieldsJsonObject(): JsonObject {
         is ItemMetadata.Reminder -> buildJsonObject {
             put("repeat", repeat)
             put("notification", notification)
+            notifyBeforeMillis?.let { put("notifyBeforeMillis", it) }
         }
         is ItemMetadata.Scheduled -> buildJsonObject {
             put("fireKind", when (fireKind) {
@@ -81,11 +82,6 @@ private fun ItemMetadata.toFieldsJsonObject(): JsonObject {
             })
             errorMessage?.let { put("errorMessage", it) }
         }
-        is ItemMetadata.CalendarEvent -> buildJsonObject {
-            put("startTime", startTime.toEpochMilliseconds())
-            put("endTime", endTime.toEpochMilliseconds())
-            location?.let { put("location", it) }
-        }
         is ItemMetadata.Answer -> buildJsonObject {
             put("question", question)
         }
@@ -96,6 +92,9 @@ private fun ItemMetadata.toFieldsJsonObject(): JsonObject {
         is ItemMetadata.McpCall -> buildJsonObject {
             put("toolName", toolName)
             put("success", success)
+        }
+        is ItemMetadata.DelegatedToIntegration -> buildJsonObject {
+            put("integration", integration)
         }
         ItemMetadata.Note -> JsonObject(emptyMap())
         ItemMetadata.Checklist -> JsonObject(emptyMap())
@@ -146,10 +145,6 @@ fun metadataForKind(kind: String, existing: ItemMetadata? = null): ItemMetadata 
             text = "",
             sentAt = Clock.System.now(),
             status = ItemMetadata.Message.Status.Sent,
-        )
-        "calendar_event" -> ItemMetadata.CalendarEvent(
-            startTime = Clock.System.now(),
-            endTime = Clock.System.now(),
         )
         "checklist" -> ItemMetadata.Checklist
         else -> ItemMetadata.Note

@@ -6,8 +6,10 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.paging.PagingSource
 import io.ktor.util.PlatformUtils
 import io.rebble.libpebblecommon.LibPebbleConfig
+import io.rebble.libpebblecommon.calendar.NewCalendarEvent
 import io.rebble.libpebblecommon.calls.Call
 import io.rebble.libpebblecommon.connection.bt.BluetoothState
+import io.rebble.libpebblecommon.connection.bt.ble.pebble.ReversePpogVersion
 import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdater
 import io.rebble.libpebblecommon.connection.endpointmanager.InstalledLanguagePack
 import io.rebble.libpebblecommon.connection.endpointmanager.LanguagePackInstallState
@@ -17,17 +19,14 @@ import io.rebble.libpebblecommon.database.asMillisecond
 import io.rebble.libpebblecommon.database.dao.AppWithCount
 import io.rebble.libpebblecommon.database.dao.ChannelAndCount
 import io.rebble.libpebblecommon.database.dao.ContactWithCount
+import io.rebble.libpebblecommon.database.dao.DailyMovementAggregate
+import io.rebble.libpebblecommon.database.dao.HealthAggregates
 import io.rebble.libpebblecommon.database.dao.WatchPreference
-import io.rebble.libpebblecommon.calendar.NewCalendarEvent
 import io.rebble.libpebblecommon.database.entity.CalendarEntity
 import io.rebble.libpebblecommon.database.entity.ChannelGroup
 import io.rebble.libpebblecommon.database.entity.ChannelItem
-import io.rebble.libpebblecommon.database.dao.DailyMovementAggregate
-import io.rebble.libpebblecommon.database.dao.HealthAggregates
-import io.rebble.libpebblecommon.database.entity.HealthDataEntity
-import io.rebble.libpebblecommon.services.DailySleep
-import io.rebble.libpebblecommon.connection.LatestHeartRate
 import io.rebble.libpebblecommon.database.entity.HRMonitoringInterval
+import io.rebble.libpebblecommon.database.entity.HealthDataEntity
 import io.rebble.libpebblecommon.database.entity.HealthGender
 import io.rebble.libpebblecommon.database.entity.MuteState
 import io.rebble.libpebblecommon.database.entity.NotificationAppItem
@@ -55,6 +54,7 @@ import io.rebble.libpebblecommon.notification.NotificationDecision
 import io.rebble.libpebblecommon.notification.VibePattern
 import io.rebble.libpebblecommon.packets.ProtocolCapsFlag
 import io.rebble.libpebblecommon.protocolhelpers.PebblePacket
+import io.rebble.libpebblecommon.services.DailySleep
 import io.rebble.libpebblecommon.services.FirmwareVersion
 import io.rebble.libpebblecommon.services.WatchInfo
 import io.rebble.libpebblecommon.services.appmessage.AppMessageData
@@ -125,7 +125,7 @@ class FakeLibPebble : LibPebble {
         // No-op
     }
 
-    override fun checkForFirmwareUpdates() {
+    override fun checkForFirmwareUpdates(force: Boolean) {
     }
 
     override suspend fun updateTimeIfNeeded() {
@@ -388,6 +388,7 @@ class FakeLibPebble : LibPebble {
             latestDataTimestamp = null,
             daysOfData = 0,
             weekdayTypicalSteps = emptyMap(),
+            weekdayTypicalSleep = emptyMap(),
         )
     }
 
@@ -591,6 +592,7 @@ class FakeConnectedDevice(
     override fun connect() {}
 
     override fun disconnect() {}
+    override val reversePpogVersion: ReversePpogVersion? = null
 
     override suspend fun sendPing(cookie: UInt): UInt = cookie
 
@@ -610,7 +612,7 @@ class FakeConnectedDevice(
 
     override fun updateFirmware(update: FirmwareUpdateCheckResult.FoundUpdate) {}
 
-    override fun checkforFirmwareUpdate() {}
+    override fun checkforFirmwareUpdate(force: Boolean) {}
 
     override suspend fun launchApp(uuid: Uuid) {}
 
@@ -745,12 +747,13 @@ class FakeConnectedDeviceInRecovery(
     override fun connect() {}
 
     override fun disconnect() {}
+    override val reversePpogVersion: ReversePpogVersion? = null
 
     override fun sideloadFirmware(path: Path) {}
 
     override fun updateFirmware(update: FirmwareUpdateCheckResult.FoundUpdate) {}
 
-    override fun checkforFirmwareUpdate() {}
+    override fun checkforFirmwareUpdate(force: Boolean) {}
 
     override val watchInfo: WatchInfo = WatchInfo(
         runningFwVersion = FirmwareVersion.from(

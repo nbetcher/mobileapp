@@ -3,6 +3,7 @@ package coredevices.ring.agent
 import co.touchlab.kermit.Logger
 import com.cactus.cactusComplete
 import com.cactus.cactusInit
+import com.cactus.cactusSetBackend
 import com.cactus.isCactusSupported
 import coredevices.indexai.agent.AgentToolCall
 import coredevices.indexai.agent.ToolCallingAgent
@@ -10,6 +11,7 @@ import coredevices.indexai.data.entity.ConversationMessageDocument
 import coredevices.indexai.data.entity.FunctionToolCall
 import coredevices.indexai.data.entity.MessageRole
 import coredevices.indexai.data.entity.ToolCall
+import coredevices.mcp.SessionContext
 import coredevices.mcp.client.McpSession
 import coredevices.mcp.client.McpSessionTool
 import coredevices.ring.agent.builtin_servlets.calendar.CalendarServlet
@@ -54,6 +56,7 @@ class IndexAgentCactus(
                 logger.d { "Initializing CactusAgent for the first time..." }
                 val initStart = Clock.System.now()
                 val modelPath = modelProvider.getLMModelPath()
+                cactusSetBackend("cpu")
                 modelHandle = cactusInit(modelPath, null, false)
                 val initDuration = Clock.System.now() - initStart
                 logger.i { "CactusAgent model initialized: $modelPath in $initDuration" }
@@ -115,7 +118,8 @@ class IndexAgentCactus(
         history: List<ConversationMessageDocument>,
         tools: List<McpSessionTool>,
         mcpSession: McpSession,
-        includePromptsFromMcps: Map<String, Set<String>>,
+        sessionContext: SessionContext,
+        includePromptsFromMcps: Map<String, Set<String>>
     ): ConversationMessageDocument {
         logger.i { "CactusAgent received input: ${if (get<CoreConfigFlow>().value.obfuscateSensitiveLogs) "[${input.length} chars redacted]" else input}" }
 
