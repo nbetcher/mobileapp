@@ -16,19 +16,14 @@
     "unreleased_commits_beyond_cutoff": 9
   },
   "last_merge_failure": {
-    "at": "2026-08-09T09:51:36Z",
-    "run_url": "https://github.com/nbetcher/mobileapp/actions/runs/31306793191",
+    "at": "2026-08-09T09:58:08Z",
+    "run_url": "https://github.com/nbetcher/mobileapp/actions/runs/31307050677",
     "version": "1.8.0.6"
   },
-  "last_synced_cutoff": "3d3c997144d81add1b19957c36b78963547197fb",
+  "last_synced_cutoff": "",
   "last_synced_tasker": "",
-  "last_synced_version": "1.8.0.6",
-  "previous": {
-    "last_synced_cutoff": "",
-    "last_synced_tasker": "",
-    "last_synced_version": ""
-  },
+  "last_synced_version": "",
   "run_url": "https://github.com/nbetcher/mobileapp/actions/runs/31307050677",
-  "status": "merging",
-  "updated_at": "2026-08-09T09:55:06Z"
+  "status": "merge-failed",
+  "updated_at": "2026-08-09T09:58:08Z"
 }
