@@ -562,18 +562,36 @@ jobs:
           echo "merged_sha=$MERGED" >> "$GITHUB_OUTPUT"
           git push origin "HEAD:refs/heads/${TASKER_BRANCH}"
 
+          # --- The two MIRROR refs below point at RAW upstream commits, whose trees
+          # contain upstream's .github/workflows. GITHUB_TOKEN cannot create or
+          # update any ref that introduces workflow files, so under the default
+          # token these pushes are REJECTED — there is no workaround short of a PAT
+          # with `workflow` scope (set PIPELINE_PAT and switch the remote below).
+          #
+          # They are therefore BEST-EFFORT: a rejection warns and the run carries
+          # on. Nothing downstream depends on either ref — the pipeline fetches
+          # upstream/master directly, and the cutoff SHA is recorded in the ledger,
+          # the release notes, and the run summary regardless.
+          mirror_push() {
+            # $1 = description, $2.. = git push args
+            desc="$1"; shift
+            if git push "$@"; then
+              return 0
+            fi
+            echo "::warning title=${desc} not synced::push rejected (GITHUB_TOKEN cannot push refs carrying upstream's .github/workflows). The cutoff is still recorded in the ledger; add a PAT with 'workflow' scope to restore ref mirroring."
+            return 0
+          }
+
           # release-track = the released commit itself, for diffing/bisecting.
           # A released commit never un-ships, so a backwards move means the match
           # went wrong; refuse unless explicitly allowed.
           OLD="$(git ls-remote --heads origin "$RELEASE_BRANCH" | awk 'NR==1 {print $1}')"
           if [ -z "$OLD" ]; then
-            git push origin "${CUT}:refs/heads/${RELEASE_BRANCH}"
+            mirror_push "release-track" origin "${CUT}:refs/heads/${RELEASE_BRANCH}"
           elif [ "$OLD" != "$CUT" ]; then
-            if git cat-file -e "${OLD}^{commit}" 2>/dev/null && git merge-base --is-ancestor "$OLD" "$CUT"; then
-              git push --force-with-lease="refs/heads/${RELEASE_BRANCH}:${OLD}" \
-                origin "${CUT}:refs/heads/${RELEASE_BRANCH}"
-            elif [ "${{ inputs.allow_rewind }}" = "true" ]; then
-              git push --force-with-lease="refs/heads/${RELEASE_BRANCH}:${OLD}" \
+            if { git cat-file -e "${OLD}^{commit}" 2>/dev/null && git merge-base --is-ancestor "$OLD" "$CUT"; } \
+               || [ "${{ inputs.allow_rewind }}" = "true" ]; then
+              mirror_push "release-track" --force-with-lease="refs/heads/${RELEASE_BRANCH}:${OLD}" \
                 origin "${CUT}:refs/heads/${RELEASE_BRANCH}"
             else
               echo "::warning title=release-track not moved::$OLD -> $CUT would be non-fast-forward; re-dispatch with allow_rewind=true if that is intended"
@@ -581,8 +599,8 @@ jobs:
           fi
 
           # master stays a plain mirror of upstream (fast-forward only).
-          git push origin "refs/remotes/upstream/${UPSTREAM_BRANCH}:refs/heads/${MIRROR_BRANCH}" \
-            || echo "::warning title=master diverged::could not fast-forward ${MIRROR_BRANCH}; the mirror needs a human"
+          mirror_push "master mirror" origin \
+            "refs/remotes/upstream/${UPSTREAM_BRANCH}:refs/heads/${MIRROR_BRANCH}"
 
       # --- TAG + RELEASE, both BEFORE the build (per spec). The build job
       # attaches the APK on success; the finalize job deletes the RELEASE (never
