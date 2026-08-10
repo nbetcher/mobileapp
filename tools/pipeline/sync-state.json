@@ -1,6 +1,6 @@
 {
   "build_counters": {
-    "1.8.0.6": 6
+    "1.8.0.6": 7
   },
   "build_strikes": [],
   "cutoff": {
@@ -26,7 +26,12 @@
   "last_synced_cutoff": "3d3c997144d81add1b19957c36b78963547197fb",
   "last_synced_tasker": "083343f8a845ebdd80d3a25d7b42eece92f3efd6",
   "last_synced_version": "1.8.0.6",
-  "run_url": "https://github.com/nbetcher/mobileapp/actions/runs/31331732189",
-  "status": "built",
-  "updated_at": "2026-08-09T19:36:26Z"
+  "previous": {
+    "last_synced_cutoff": "3d3c997144d81add1b19957c36b78963547197fb",
+    "last_synced_tasker": "083343f8a845ebdd80d3a25d7b42eece92f3efd6",
+    "last_synced_version": "1.8.0.6"
+  },
+  "run_url": "https://github.com/nbetcher/mobileapp/actions/runs/31350869133",
+  "status": "merging",
+  "updated_at": "2026-08-10T02:50:27Z"
 }
