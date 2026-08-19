@@ -30,6 +30,7 @@ import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.io.RawSource
 import kotlinx.io.Source
 import kotlinx.io.buffered
 import kotlinx.io.files.Path
@@ -85,6 +86,7 @@ private data class FwupProperties(
     val watchPlatform: WatchHardwarePlatform,
     val updateToSlot: Int?,
     val supportsResume: Boolean,
+    val runningFwVersion: FirmwareVersion,
 )
 
 /**
@@ -155,7 +157,7 @@ class RealFirmwareUpdater(
             1 -> 0
             else -> null
         }
-        props = FwupProperties(watchPlatform, updateToSlot, supportsResume)
+        props = FwupProperties(watchPlatform, updateToSlot, supportsResume, runningFwVersion)
         maybeAutoResume(runningFwVersion)
     }
 
@@ -213,6 +215,17 @@ class RealFirmwareUpdater(
 
             fwupProps.updateToSlot != null && fwupProps.updateToSlot != firmware.slot && !isRecoveryFirmware ->
                 throw FirmwareUpdateException.SafetyCheckFailed("Firmware slot (${firmware.slot}) does not match watch slot: (${fwupProps.updateToSlot})")
+        }
+        checkCrc("Firmware", manifest.getFirmware(), firmware.size, firmware.crc)
+        resources?.let { checkCrc("Resources", manifest.getResources()!!, it.size, it.crc) }
+    }
+
+    private fun checkCrc(name: String, source: RawSource, size: Long, expectedCrc: Long) {
+        val actual = source.buffered().use { it.crc32(size) }
+        if (actual != expectedCrc.toUInt()) {
+            throw FirmwareUpdateException.SafetyCheckFailed(
+                "$name CRC does not match manifest: expected $expectedCrc, got $actual"
+            )
         }
     }
 
@@ -342,9 +355,14 @@ class RealFirmwareUpdater(
                 version = updateToVersion,
                 url = "",
                 notes = "Sideloaded",
+                canDowngrade = true,
             )
             logger.d { "sideloadFirmware path: $path" }
             if (!tryStartUpdateMutex(update)) {
+                return@launch
+            }
+            if (needsPrfToDowngrade(update, fwupProps.runningFwVersion)) {
+                rebootIntoPrfForDowngrade(update)
                 return@launch
             }
             beginFirmwareUpdate(pbz, update, fwupProps)
@@ -363,6 +381,10 @@ class RealFirmwareUpdater(
                 throw FirmwareUpdateException.SafetyCheckFailed("FirmwareUpdater not initialized")
             }
             if (!tryStartUpdateMutex(update)) {
+                return@launch
+            }
+            if (needsPrfToDowngrade(update, fwupProps.runningFwVersion)) {
+                rebootIntoPrfForDowngrade(update)
                 return@launch
             }
             val pbz = reusableDownloadedPbz(update) ?: run {
@@ -414,6 +436,14 @@ class RealFirmwareUpdater(
             logger.w(e) { "Previously-downloaded pbz unusable; re-downloading" }
             null
         }
+    }
+
+    /** Nothing is transferred: the update is installed from the normal PRF flow after reconnect. */
+    private fun rebootIntoPrfForDowngrade(update: FirmwareUpdateCheckResult.FoundUpdate) {
+        logger.i { "Downgrade to ${update.version.stringVersion}: rebooting watch into PRF" }
+        interruptedUpdates.clear(identifier)
+        _firmwareUpdateState.value = FirmwareUpdateStatus.WaitingForReboot(update)
+        systemService.resetIntoPrf()
     }
 
     override fun checkforFirmwareUpdate(force: Boolean) {
@@ -531,7 +561,7 @@ class RealFirmwareUpdater(
             source = source,
             sendInstall = false,
             resumeOffset = skip,
-            objectCrc = if (skip > 0u) firmware.crc.toUInt() else null,
+            objectCrc = firmware.crc.toUInt(),
         ).onCompletion { source.close() } // Can't do use block because of the flow
     }
 
@@ -554,7 +584,7 @@ class RealFirmwareUpdater(
             source = source,
             sendInstall = false,
             resumeOffset = skip,
-            objectCrc = if (skip > 0u) resources.crc.toUInt() else null,
+            objectCrc = resources.crc.toUInt(),
         ).onCompletion { source.close() }
     }
 }
@@ -585,6 +615,17 @@ internal fun validatedResumeOffset(
 
 private fun FirmwareVersion.sameVersionNumberAs(other: FirmwareVersion): Boolean =
     major == other.major && minor == other.minor && patch == other.patch
+
+/** Ignores the timestamp, which is a placeholder on versions that came from an update check. */
+private fun FirmwareVersion.lowerVersionNumberThan(other: FirmwareVersion): Boolean =
+    compareValuesBy(this, other, { it.major }, { it.minor }, { it.patch }) < 0
+
+/** Dual-slot firmware refuses to install a version lower than the one running; PRF doesn't. */
+internal fun needsPrfToDowngrade(
+    update: FirmwareUpdateCheckResult.FoundUpdate,
+    running: FirmwareVersion,
+): Boolean = update.canDowngrade && running.isDualSlot && !running.isRecovery &&
+        update.version.lowerVersionNumberThan(running)
 
 fun PbzManifest.asFirmwareVersion(): FirmwareVersion? {
     val versionTag = firmware.versionTag

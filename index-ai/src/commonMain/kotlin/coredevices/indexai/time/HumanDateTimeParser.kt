@@ -172,23 +172,14 @@ class HumanDateTimeParser(
     private fun parseAbsoluteDateTime(input: String): InterpretedDateTime.AbsoluteDateTime? {
         dayWordTimeOfDayPattern.find(input)?.let { match ->
             val dayWord = match.groupValues[1].let { if (it == "this") "today" else it }
-            val timeOfDay = match.groupValues[2]
             val date = parseDayWord(dayWord) ?: return null
-            val atClause = atTimePattern.find(input.removeRange(match.range))
-                ?.takeIf { it.groupValues[1].any { c -> c.isDigit() } }
-            val time = if (atClause != null) {
-                // A numeric "at" clause is an explicit time; if it can't parse, fail rather than
-                // silently falling back to the vague time-of-day default the user overrode.
-                val parsed = parseTimeString(atClause.groupValues[1], allowBareHour = true) ?: return null
-                val amPmMissing = !amPmPattern.containsMatchIn(atClause.groupValues[1])
-                if (amPmMissing && parsed.hour in 1..11 && timeOfDay != "morning") {
-                    LocalTime(parsed.hour + 12, parsed.minute)
-                } else {
-                    parsed
-                }
-            } else {
-                parseTimeOfDay(timeOfDay) ?: return null
-            }
+            val time = resolveTimeOfDay(input, match.range, match.groupValues[2]) ?: return null
+            return InterpretedDateTime.AbsoluteDateTime(LocalDateTime(date, time))
+        }
+
+        dayOfWeekTimeOfDayPattern.find(input)?.let { match ->
+            val date = parseNextDayOfWeek(match.groupValues[1]) ?: return null
+            val time = resolveTimeOfDay(input, match.range, match.groupValues[2]) ?: return null
             return InterpretedDateTime.AbsoluteDateTime(LocalDateTime(date, time))
         }
 
@@ -254,6 +245,24 @@ class HumanDateTimeParser(
         }
 
         return null
+    }
+
+    private fun resolveTimeOfDay(input: String, matchRange: IntRange, timeOfDay: String): LocalTime? {
+        val remainder = input.removeRange(matchRange)
+        val atClause = atTimePattern.find(remainder)
+            ?.takeIf { it.groupValues[1].any { c -> c.isDigit() } }
+        val timeStr = atClause?.groupValues?.get(1)
+            ?: remainder.takeIf { r -> r.any { c -> c.isDigit() } }
+            ?: return parseTimeOfDay(timeOfDay)
+        // A numeric clause is an explicit time; if it can't parse, fail rather than
+        // silently falling back to the vague time-of-day default the user overrode.
+        val parsed = parseTimeString(timeStr, allowBareHour = true) ?: return null
+        val amPmMissing = !amPmPattern.containsMatchIn(timeStr)
+        return if (amPmMissing && parsed.hour in 1..11 && timeOfDay != "morning") {
+            LocalTime(parsed.hour + 12, parsed.minute)
+        } else {
+            parsed
+        }
     }
 
     private fun parseAbsoluteTime(input: String): InterpretedDateTime.AbsoluteTime? {
@@ -562,6 +571,7 @@ class HumanDateTimeParser(
 
         // Absolute date+time patterns
         private val dayWordTimeOfDayPattern = Regex("""(today|tomorrow|this)\s+(morning|afternoon|evening|night)""")
+        private val dayOfWeekTimeOfDayPattern = Regex("""(?:next|on)?\s*(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+(morning|afternoon|evening|night)""")
         private val dayWordTimePattern = Regex("""(today|tomorrow)\s+at\s+(.+)""")
         private val timeDayWordPattern = Regex("""(?:at\s+)?(.+?)\s+(today|tomorrow)""")
         private val dayOfWeekTimePattern = Regex("""(?:next|on)?\s*(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+at\s+(.+)""")
@@ -596,8 +606,13 @@ class HumanDateTimeParser(
             // Date + time-of-day combinations. Explicit-time variants first so they aren't
             // truncated to the vague form; bare hour is allowed since "at" anchors it as a time.
             Regex("""(?:$DAY_WORD_EXPR|this)\s+$TIME_OF_DAY_EXPR\s+at\s+(?:$TIME_EXPR|$TIME_24_EXPR|\d{1,2})"""),
-            Regex("""at\s+\d{1,2}\s+(?:$DAY_WORD_EXPR|this)\s+$TIME_OF_DAY_EXPR"""),
+            Regex("""at\s+(?:$TIME_EXPR|$TIME_24_EXPR|\d{1,2})\s+(?:$DAY_WORD_EXPR|this)\s+$TIME_OF_DAY_EXPR"""),
+            Regex("""(?:$TIME_EXPR|$TIME_24_EXPR)\s+(?:$DAY_WORD_EXPR|this)\s+$TIME_OF_DAY_EXPR"""),
             Regex("""(?:$DAY_WORD_EXPR|this)\s+$TIME_OF_DAY_EXPR"""),
+            Regex("""(?:next\s+|on\s+)?$DAY_OF_WEEK_EXPR\s+$TIME_OF_DAY_EXPR\s+at\s+(?:$TIME_EXPR|$TIME_24_EXPR|\d{1,2})"""),
+            Regex("""at\s+(?:$TIME_EXPR|$TIME_24_EXPR|\d{1,2})\s+(?:next\s+|on\s+)?$DAY_OF_WEEK_EXPR\s+$TIME_OF_DAY_EXPR"""),
+            Regex("""(?:$TIME_EXPR|$TIME_24_EXPR)\s+(?:next\s+|on\s+)?$DAY_OF_WEEK_EXPR\s+$TIME_OF_DAY_EXPR"""),
+            Regex("""(?:next\s+|on\s+)?$DAY_OF_WEEK_EXPR\s+$TIME_OF_DAY_EXPR"""),
             // Relative durations
             Regex("""(?:in\s+)?half\s+an?\s+hour(?:\s+from\s+now)?"""),
             Regex("""(?:in\s+)?half\s+a\s+day(?:\s+from\s+now)?"""),
