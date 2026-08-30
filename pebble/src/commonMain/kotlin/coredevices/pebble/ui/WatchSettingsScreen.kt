@@ -223,7 +223,7 @@ enum class Section(val title: String, val icon: ImageVector) {
     QuietTime("Quiet Time", Icons.Default.DoNotDisturb),
     Connectivity("Connectivity", Icons.Default.Wifi),
     Automation("Automation", Icons.Default.Extension),
-    Music("Music", Icons.Default.MusicNote), // watch only
+    Music("Music", Icons.Default.MusicNote),
     Other("Other", Icons.Default.MoreHoriz), // watch only
     Diagnostics("Diagnostics", Icons.Default.Timeline),
     Debug("Debug", Icons.Default.BugReport),
@@ -615,7 +615,7 @@ fun rememberSettingsItemsState(navBarNav: NavBarNav?, snackbarDisplay: SnackbarD
                     title = "Configure Appstore Sources",
                     topLevelType = TopLevelType.Phone,
                     section = Section.Apps,
-                    action = { nav.navigateTo(PebbleNavBarRoutes.AppstoreSettingsRoute) },
+                    action = { nav.navigateTo(PebbleNavBarRoutes.AppstoreSettingsRoute()) },
                 ) },
                 basicSettingsDropdownItem(
                     title = "App Theme",
@@ -813,6 +813,23 @@ fun rememberSettingsItemsState(navBarNav: NavBarNav?, snackbarDisplay: SnackbarD
                         )
                     },
                     show = { pebbleFeatures.supportsVibePatterns() },
+                ),
+                basicSettingsToggleItem(
+                    title = "Send notification images",
+                    description = "Show photos sent in messages on the watch. Can also be turned off per app on the Notifications tab.",
+                    topLevelType = TopLevelType.Phone,
+                    section = Section.Notifications,
+                    checked = libPebbleConfig.notificationConfig.sendNotificationImages,
+                    onCheckChanged = {
+                        libPebble.updateConfig(
+                            libPebbleConfig.copy(
+                                notificationConfig = libPebbleConfig.notificationConfig.copy(
+                                    sendNotificationImages = it
+                                )
+                            )
+                        )
+                    },
+                    show = { pebbleFeatures.supportsNotificationImages() },
                 ),
                 basicSettingsToggleItem(
                     title = "Send local-only notifications to watch",
@@ -2004,6 +2021,23 @@ fun rememberSettingsItemsState(navBarNav: NavBarNav?, snackbarDisplay: SnackbarD
                         coreConfigHolder.update(coreConfig.copy(showWatchConnectionDebugInfo = it))
                     },
                     isDebugSetting = true,
+                ),
+                basicSettingsToggleItem(
+                    title = "Seek instead of Skip for Podcasts",
+                    description = "Icons will only update on updated PebbleOS version",
+                    topLevelType = TopLevelType.Phone,
+                    section = Section.Music,
+                    checked = libPebbleConfig.watchConfig.musicSeekWhenAvailable,
+                    onCheckChanged = {
+                        libPebble.updateConfig(
+                            libPebbleConfig.copy(
+                                watchConfig = libPebbleConfig.watchConfig.copy(
+                                    musicSeekWhenAvailable = it
+                                )
+                            )
+                        )
+                    },
+                    show = { pebbleFeatures.supportsMusic() },
                 ),
             ) + watchPrefs
         }

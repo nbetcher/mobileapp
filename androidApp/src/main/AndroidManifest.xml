@@ -155,5 +155,29 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
+
+        <!--
+            Attaches a QEMU emulator watch for automated testing. android:permission restricts the
+            sender to adb/shell and system, so no installed app can reach it; that gate is what
+            keeps it safe to ship in release builds for CI.
+        -->
+        <receiver
+            android:name="coredevices.coreapp.debug.QemuSetupReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="coredevices.coreapp.ADD_QEMU_WATCH" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Starts the LAN dev connection for pebble-tool's adb transport. Same DUMP gate. -->
+        <receiver
+            android:name="coredevices.coreapp.debug.DevConnectionReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="coredevices.coreapp.DEV_CONNECTION" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>
