@@ -227,6 +227,7 @@ enum class Section(val title: String, val icon: ImageVector) {
     Other("Other", Icons.Default.MoreHoriz), // watch only
     Diagnostics("Diagnostics", Icons.Default.Timeline),
     Debug("Debug", Icons.Default.BugReport),
+    BundledPlugins("Bundled Plugins", Icons.Default.Extension), // TODO to be removed when we have a better solution
 }
 
 fun Section.navigatesDirectlyTo(): NavBarRoute? = when (this) {
@@ -1902,6 +1903,42 @@ fun rememberSettingsItemsState(navBarNav: NavBarNav?, snackbarDisplay: SnackbarD
                     show = { loggedIn != null },
                     isDebugSetting = true,
                 ),
+                basicSettingsToggleItem(
+                    title = "Use experimental plugins",
+                    description = "Enable the new plugins API. This is an experimental feature under development - not recommended unless you know what you are doing (API is unstable, and can expose private data until a permission system is implemented)",
+                    topLevelType = TopLevelType.Phone,
+                    section = Section.Debug,
+                    checked = libPebbleConfig.watchConfig.enablePlugins,
+                    onCheckChanged = {
+                        libPebble.updateConfig(
+                            libPebbleConfig.copy(
+                                watchConfig = libPebbleConfig.watchConfig.copy(
+                                    enablePlugins = it
+                                )
+                            )
+                        )
+                    },
+                    isDebugSetting = true,
+                ),
+                *libPebble.configurablePlugins().map { plugin ->
+                    basicSettingsActionItem(
+                        title = "Configure ${plugin.name}",
+                        description = "Settings for the ${plugin.name} plugin",
+                        topLevelType = TopLevelType.Phone,
+                        section = Section.BundledPlugins,
+                        action = {
+                            WatchappSettingsUrlCache.put(plugin.uuid, plugin.configPageUrl)
+                            navBarNav?.navigateTo(
+                                PebbleRoutes.WatchappSettingsRoute(
+                                    uuid = plugin.uuid,
+                                    title = plugin.name,
+                                )
+                            )
+                        },
+                        show = { libPebbleConfig.watchConfig.enablePlugins },
+                        isDebugSetting = true,
+                    )
+                }.toTypedArray(),
                 basicSettingsActionItem(
                     title = "Sign Out - Pebble Account",
                     description = "Sign out of your Pebble account ($coreUser)",
