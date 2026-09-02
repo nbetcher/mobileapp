@@ -108,6 +108,7 @@ gh workflow run fork-sync.yml -f reset_strikes=true -f force=true
 | `READ_PACKAGES_ACTOR` | GitHub login for GitHub Packages reads |
 | `READ_PACKAGES_TOKEN` | token with `read:packages` for the above |
 | `GEMINI_API_KEY` | Google AI Studio key — the AI merge tier |
+| `MEMFAULT_TOKEN` | Memfault project key. Empty in upstream's public `gradle.properties`; without it `CommonBuildKonfig.MEMFAULT_TOKEN` is null and the app ships with **firmware update checks disabled** for Core Devices watches (`FirmwareUpdateCheck.kt`) and no Memfault chunk uploads. Local builds read it from `~/.gradle/gradle.properties`. |
 
 `GITHUB_TOKEN` (auto-provided) covers releases, issues, and the workflow enable/disable calls via
 `permissions: contents: write, issues: write, actions: write`.

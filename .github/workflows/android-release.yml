@@ -68,6 +68,8 @@ on:
         required: false
       READ_PACKAGES_TOKEN:
         required: false
+      MEMFAULT_TOKEN:
+        required: false
 
   workflow_dispatch:
     inputs:
@@ -199,6 +201,9 @@ jobs:
           # GitHub Packages read auth (mirrors upstream build.yml).
           GITHUB_ACTOR: ${{ secrets.READ_PACKAGES_ACTOR }}
           GITHUB_TOKEN: ${{ secrets.READ_PACKAGES_TOKEN }}
+          # Memfault project key. Upstream ships this empty in the public gradle.properties,
+          # so a CI build without it bakes MEMFAULT_TOKEN=null into the APK.
+          MEMFAULT_TOKEN: ${{ secrets.MEMFAULT_TOKEN }}
         run: |
           set -eu
           printf '%s' "$APP_KEYSTORE_B64" | base64 -d > keystore.jks
@@ -214,9 +219,22 @@ jobs:
           # Crashlytics mapping upload is excluded: the dummy google-services.json
           # has no real Firebase project, so the upload 400s. R8 + the signed APK
           # are unaffected (the mapping .txt is still produced locally).
-          ./gradlew --no-daemon $TASKS \
+          # CommonBuildKonfig.MEMFAULT_TOKEN. FirmwareUpdateCheck gates the Core Devices
+          # firmware check on it being non-null, so without it the shipped app silently stops
+          # offering watch firmware updates and drops Memfault chunk uploads. Local builds read
+          # it from ~/.gradle/gradle.properties; CI has to inject it.
+          MEMFAULT_ARG=""
+          if [ -n "${MEMFAULT_TOKEN:-}" ]; then
+            MEMFAULT_ARG="-PmemfaultToken=$MEMFAULT_TOKEN"
+          else
+            echo "::warning title=No Memfault token::MEMFAULT_TOKEN is unset; this build ships with firmware update checks disabled for Core Devices watches"
+          fi
+          # --stacktrace matches the local build scripts: a bare Gradle failure in CI is often
+          # truncated to a message with no frame to act on.
+          ./gradlew --no-daemon --stacktrace $TASKS \
             -PpebbleVersionName="${{ inputs.version_name }}" \
             -PpebbleCommitHash="${{ inputs.commit_hash }}" \
+            ${MEMFAULT_ARG:+"$MEMFAULT_ARG"} \
             -x uploadCrashlyticsMappingFileRelease
 
       - name: Upload build reports on failure
