@@ -21,15 +21,6 @@ val gitVersionName = providers.exec {
     commandLine("git", "describe", "--tags", "--abbrev=0", "HEAD")
 }.standardOutput.asText.map { it.trim().ifEmpty { "unknown" } }
 
-// Tag as an increasing int: 1.9.1.3 -> 10901003. Major must stay below 100, the rest below 1000.
-val gitVersionCode = gitVersionName.map { name ->
-    val parts = name.split('.').map { it.toIntOrNull() ?: -1 }
-    if (parts.size > 4 || parts.first() !in 0..99 || parts.any { it !in 0..999 }) {
-        throw GradleException("Cannot derive versionCode from tag '$name'")
-    }
-    listOf(10_000_000, 100_000, 1_000, 1).zip(parts) { scale, part -> scale * part }.sum()
-}
-
 // Store version at the release cutoff, injected by the sync pipeline as -PpebbleVersionName.
 // Without it versionName falls back to "unknown", which the Rebble cohorts firmware check
 // (Cohorts.kt -> cohorts.rebble.io) cannot resolve, eventually forcing the watch into recovery.
@@ -40,6 +31,18 @@ val injectedVersionName: String? = (findProperty("pebbleVersionName") as String?
 
 val resolvedVersionName: Provider<String> =
     injectedVersionName?.let { v -> providers.provider { v } } ?: gitVersionName
+
+// Tag as an increasing int: 1.9.1.3 -> 10901003. Major must stay below 100, the rest below 1000.
+// Derived from the resolved name, not the raw tag: the sync pipeline tags v<version>-tasker.<N>,
+// which has too many parts and a non-numeric first one.
+val gitVersionCode = resolvedVersionName.map { name ->
+    val cleaned = name.removePrefix("v").substringBefore('-')
+    val parts = cleaned.split('.').map { it.toIntOrNull() ?: -1 }
+    if (parts.size > 4 || parts.first() !in 0..99 || parts.any { it !in 0..999 }) {
+        throw GradleException("Cannot derive versionCode from version '$name'")
+    }
+    listOf(10_000_000, 100_000, 1_000, 1).zip(parts) { scale, part -> scale * part }.sum()
+}
 
 // Upstream commit we resynced to, for the APK filename. Injected as -PpebbleCommitHash; falls back
 // to HEAD for ad-hoc local builds. Kept as a Provider so it resolves at execution time.
