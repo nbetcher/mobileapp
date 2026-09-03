@@ -50,7 +50,7 @@ on:
         description: "Filename of the signed APK inside the uploaded artifact"
         value: ${{ jobs.android.outputs.apk_name }}
       version_code:
-        description: "versionCode baked into the APK (= commit count)"
+        description: "versionCode baked into the APK (store version packed into an int)"
         value: ${{ jobs.android.outputs.version_code }}
       artifact:
         description: "Name of the uploaded artifact holding the APK + .sha256"
@@ -110,7 +110,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
-          fetch-depth: 0        # versionCode = git rev-list --count HEAD
+          fetch-depth: 0        # tags + history, for git describe fallbacks
           submodules: recursive
 
       - name: Set up JDK 17
@@ -268,7 +268,11 @@ jobs:
           sh tools/pipeline/lib/sign.sh "$IN" "dist/$APK"
           ( cd dist && sha256sum "$APK" > "${APK}.sha256" )
 
-          VC="$(git rev-list --count HEAD)"
+          # versionCode is the store version packed into an int by androidApp/build.gradle.kts,
+          # so read what AGP wrote rather than recomputing it.
+          META="$OUTDIR/output-metadata.json"
+          VC="$(jq -r ".elements[0].versionCode" "$META")"
+          case "$VC" in ""|null) echo "no versionCode in $META" >&2; exit 1 ;; esac
           {
             echo "apk_name=$APK"
             echo "version_code=$VC"
