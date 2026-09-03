@@ -19,7 +19,7 @@
     "store_version": "1.11.0.3",
     "unreleased_commits_beyond_cutoff": 7
   },
-  "last_built_tag": "v1.11.0.3-tasker.1",
+  "last_built_tag": "v1.11.0.3-tasker.2",
   "last_built_version": "1.11.0.3",
   "last_merge_failure": {
     "at": "2026-08-09T09:58:08Z",
@@ -27,14 +27,9 @@
     "version": "1.8.0.6"
   },
   "last_synced_cutoff": "46757ae45df86107b0b9fa7d17b0cb99cb8d3657",
-  "last_synced_tasker": "d12e4b3e703afe2f316e354aa69566059569e4fa",
+  "last_synced_tasker": "53a410f48f36854bd86dc71344be979a426995a0",
   "last_synced_version": "1.11.0.3",
-  "previous": {
-    "last_synced_cutoff": "db67acbd4f942313178dece8fed329e73b5b4d30",
-    "last_synced_tasker": "d12e4b3e703afe2f316e354aa69566059569e4fa",
-    "last_synced_version": "1.11.0.3"
-  },
   "run_url": "https://github.com/nbetcher/mobileapp/actions/runs/33724866544",
-  "status": "merging",
-  "updated_at": "2026-09-03T06:47:35Z"
+  "status": "built",
+  "updated_at": "2026-09-03T06:56:00Z"
 }
