@@ -266,8 +266,8 @@ fun WatchesScreen(navBarNav: NavBarNav, topBarParams: TopBarParams) {
     }
 
     suspend fun requestCDMForInactiveIndex(uiContext: PlatformUiContext, identifier: IndexIdentifier) {
-        topBarParams.showSnackbar("Press the button on your Index 01 so this device can find it...")
-        companionDevice.registerDevice(identifier, uiContext)
+        // Use classic as it won't scan and some phones have had trouble with LE CDM scan on the random addr
+        companionDevice.registerDevice(identifier, uiContext, true)
     }
 
     LaunchedEffect(requestIndexCompanion) {
@@ -788,6 +788,7 @@ fun RingItem(
     val coreAnalytics = koinInject<CoreAnalytics>()
     val platform = koinInject<Platform>()
     val companionDevice = koinInject<CompanionDevice>()
+    val libIndex = koinInject<LibIndex>()
     val uiContext = rememberUiContext()
     var showRingAlreadyPairedDialog by remember { mutableStateOf(false) }
     var companionApproved by remember(ring.identifier) {
@@ -851,7 +852,7 @@ fun RingItem(
                             Button(
                                 onClick = {
                                     scope.launch {
-                                        uiContext?.let { companionDevice.registerDevice(ring.identifier, it) }
+                                        uiContext?.let { companionDevice.registerDevice(ring.identifier, it, false) }
                                         val result = try {
                                             ring.pair()
                                         } catch (e: Exception) {
@@ -907,6 +908,9 @@ fun RingItem(
                                 scope.launch {
                                     try {
                                         ring.forceFailsafe()
+                                        // The ring reboots into failsafe under a new address; rescan
+                                        // so it is listed and the recovery scan loop picks it up.
+                                        libIndex.startScan()
                                     } catch (e: Exception) {
                                         logger.e(e) { "Failed to force failsafe: ${e.message}" }
                                     }
