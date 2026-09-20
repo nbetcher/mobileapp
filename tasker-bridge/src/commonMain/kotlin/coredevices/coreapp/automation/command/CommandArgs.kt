@@ -13,6 +13,7 @@ internal object CommandArgs {
      * prefs (only up/down have those). Combos accept "back+up" / "up+down" spellings.
      */
     fun quickLaunchPrefId(button: String, press: String): String? {
+        if (press.trim().lowercase() !in setOf("long", "hold", "short", "tap", "single")) return null
         val hold = press.trim().lowercase().let { it != "short" && it != "tap" && it != "single" }
         return when (button.trim().lowercase()) {
             "up" -> if (hold) "qlUp" else "qlSingleClickUp"

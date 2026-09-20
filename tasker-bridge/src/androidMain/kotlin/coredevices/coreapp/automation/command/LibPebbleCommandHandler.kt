@@ -5,6 +5,7 @@ import coredevices.coreapp.automation.CommandEnvelope
 import coredevices.coreapp.automation.ErrorCode
 import coredevices.coreapp.automation.events.EventDispatcher
 import io.rebble.libpebblecommon.SystemAppIDs.ANDROID_NOTIFICATIONS_UUID
+import io.rebble.libpebblecommon.automation.AutomationAppMessageHook
 import io.rebble.libpebblecommon.connection.ActiveDevice
 import io.rebble.libpebblecommon.connection.CommonConnectedDevice
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
@@ -17,6 +18,7 @@ import io.rebble.libpebblecommon.database.entity.QuickLaunchSetting
 import io.rebble.libpebblecommon.database.entity.QuicklaunchWatchPref
 import io.rebble.libpebblecommon.database.entity.WatchPref
 import io.rebble.libpebblecommon.database.entity.WatchPrefType
+import io.rebble.libpebblecommon.database.entity.NumberWatchPref
 import io.rebble.libpebblecommon.database.entity.buildTimelineNotification
 import io.rebble.libpebblecommon.locker.AppType
 import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
@@ -25,11 +27,15 @@ import io.rebble.libpebblecommon.services.appmessage.AppMessageData
 import io.rebble.libpebblecommon.services.appmessage.AppMessageResult
 import io.rebble.libpebblecommon.services.blobdb.TimelineActionResult
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlin.time.Clock
+import kotlin.time.TimeSource
 import kotlin.uuid.Uuid
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.random.Random
 
 /**
  * LibPebble-backed implementation of the command allowlist (HOOKS.md §3). Pure actuation: the
@@ -39,17 +45,27 @@ import kotlin.uuid.Uuid
  * without breaking the contract.
  *
  * Watch selection: [CommandEnvelope.watch] is matched against a connected device's serial or BT
- * address; absent ⇒ the single/active connected watch. Facade-level commands (launchApp, ping) fan out
- * to all connected watches via [LibPebble] and ignore the selector by design.
+ * address; absent requires exactly one connected watch. Global phone-side operations reject selectors.
  */
 class LibPebbleCommandHandler(
     private val libPebble: LibPebble,
     private val dispatcher: EventDispatcher,
+    private val timeSource: TimeSource = TimeSource.Monotonic,
 ) : CommandHandler {
     private val logger = Logger.withTag("AutomationBridge")
     private val json = Json { ignoreUnknownKeys = true }
+    private val pingCookies = AtomicInteger(Random.nextInt())
 
-    override suspend fun handle(command: CommandEnvelope): CommandResult = when (command.type) {
+    override suspend fun handle(command: CommandEnvelope, clientIdentity: String): CommandResult =
+        if (command.type == CommandCatalog.APPMESSAGE_SUBSCRIBE) subscribeAppMessage(command, clientIdentity)
+        else if (command.type == CommandCatalog.NOTIFICATION_SEND && command.watch.isNullOrBlank()) sendNotification(command, clientIdentity)
+        else handle(command)
+
+    override suspend fun handle(command: CommandEnvelope): CommandResult {
+        if (command.type in CommandCatalog.globalTypes && !command.watch.isNullOrBlank()) {
+            return CommandResult.Failure(ErrorCode.INVALID_ARGS, "${command.type} is global; a watch selector is unsupported")
+        }
+        return when (command.type) {
         CommandCatalog.WATCH_GET_INFO -> getInfo(command)
         CommandCatalog.SYSTEM_PING -> ping(command)
         CommandCatalog.WATCH_LAUNCH_APP -> launchApp(command)
@@ -58,12 +74,14 @@ class LibPebbleCommandHandler(
         CommandCatalog.WATCH_DISCONNECT -> disconnect(command)
         CommandCatalog.DEV_TOGGLE_CONNECTION -> toggleDev(command)
         CommandCatalog.APPMESSAGE_SEND -> sendAppMessage(command)
+        CommandCatalog.APPMESSAGE_SUBSCRIBE -> CommandResult.Failure(ErrorCode.NOT_AUTHORIZED, "missing verified client identity")
         CommandCatalog.NOTIFICATION_SEND -> sendNotification(command)
         CommandCatalog.WATCH_SET_PREF -> setPref(command)
         CommandCatalog.WATCH_SET_QUICK_LAUNCH -> setQuickLaunch(command)
         CommandCatalog.SYSTEM_GET_LOCKER -> getLocker(command)
 
         else -> CommandResult.Failure(ErrorCode.UNSUPPORTED_COMMAND, "unknown command '${command.type}'")
+        }
     }
 
     // --- system.getLocker (read-only locker list for client-side pickers) ---
@@ -74,7 +92,8 @@ class LibPebbleCommandHandler(
         val types = when (command.args["type"]?.lowercase()) {
             "watchface" -> listOf(AppType.Watchface)
             "watchapp" -> listOf(AppType.Watchapp)
-            else -> listOf(AppType.Watchapp, AppType.Watchface)
+            null, "", "all" -> listOf(AppType.Watchapp, AppType.Watchface)
+            else -> return CommandResult.Failure(ErrorCode.INVALID_ARGS, "invalid locker type")
         }
         val entries = buildList {
             for (t in types) {
@@ -87,9 +106,13 @@ class LibPebbleCommandHandler(
     }
 
     // --- watch.getInfo ---
-    private fun getInfo(command: CommandEnvelope): CommandResult {
+    private suspend fun getInfo(command: CommandEnvelope): CommandResult {
         val device = resolveConnected(command.watch)
             ?: return noWatch(command.watch)
+        val runningApp = (device as? ConnectedPebbleDevice)?.runningApp?.value
+        val face = runningApp?.let { uuid ->
+            libPebble.getLockerApp(uuid).first()?.takeIf { it.properties.type == AppType.Watchface }
+        }
         return CommandResult.Ok(
             buildMap {
                 put("serial", device.serial)
@@ -100,24 +123,38 @@ class LibPebbleCommandHandler(
                 device.batteryLevel?.let { put("battery", it.toString()) }
                 put("address", device.identifier.asString)
                 put("connected", "true")
-                (device as? ConnectedPebbleDevice)?.runningApp?.value?.let { put("running_app", it.toString()) }
+                runningApp?.let { put("running_app", it.toString()) }
+                face?.let {
+                    put("watchface", it.properties.title)
+                    put("watchface_uuid", it.properties.id.toString())
+                }
             },
         )
     }
 
-    // --- system.ping (facade fan-out) ---
+    // --- system.ping (watch response, measured using a monotonic clock) ---
     private suspend fun ping(command: CommandEnvelope): CommandResult {
-        val cookie = command.args["cookie"]?.toUIntOrNull() ?: 0u
-        libPebble.sendPing(cookie)
-        return CommandResult.Ok(mapOf("sent" to "true"))
+        val cookie = command.args["cookie"]?.let {
+            it.toUIntOrNull() ?: return CommandResult.Failure(ErrorCode.INVALID_ARGS, "invalid cookie")
+        } ?: pingCookies.getAndIncrement().toUInt()
+        val device = resolveConnected(command.watch) as? ConnectedPebbleDevice ?: return noWatch(command.watch)
+        val started = timeSource.markNow()
+        val response = device.sendPing(cookie)
+        if (response != cookie) return CommandResult.Failure(ErrorCode.INTERNAL, "ping response cookie mismatch")
+        return CommandResult.Ok(mapOf("serial" to device.serial, "sent" to "true", "rtt_ms" to started.elapsedNow().inWholeMilliseconds.toString()))
     }
 
-    // --- watch.launchApp / watch.setWatchface (facade fan-out) ---
+    // --- watch.launchApp / watch.setWatchface (selected watch only) ---
     private suspend fun launchApp(command: CommandEnvelope): CommandResult {
         val uuid = command.args["uuid"]?.let { runCatching { Uuid.parse(it) }.getOrNull() }
             ?: return CommandResult.Failure(ErrorCode.INVALID_ARGS, "missing/invalid 'uuid'")
-        libPebble.launchApp(uuid)
-        return CommandResult.Ok(mapOf("uuid" to uuid.toString()))
+        val device = resolveConnected(command.watch) as? ConnectedPebbleDevice ?: return noWatch(command.watch)
+        if (command.type == CommandCatalog.WATCH_SET_WATCHFACE &&
+            libPebble.getLockerApp(uuid).first()?.properties?.type != AppType.Watchface) {
+            return CommandResult.Failure(ErrorCode.INVALID_ARGS, "uuid is not an installed watchface")
+        }
+        device.launchApp(uuid)
+        return CommandResult.Ok(mapOf("uuid" to uuid.toString(), "serial" to device.serial))
     }
 
     // --- watch.connect ---
@@ -136,6 +173,9 @@ class LibPebbleCommandHandler(
 
     // --- dev.toggleConnection (dangerous) ---
     private suspend fun toggleDev(command: CommandEnvelope): CommandResult {
+        if (!command.args["transport"].isNullOrBlank()) {
+            return CommandResult.Failure(ErrorCode.UNSUPPORTED_COMMAND, "explicit developer transport is unsupported; use app configuration")
+        }
         val device = resolveConnected(command.watch) as? ConnectedPebbleDevice
             ?: return noWatch(command.watch)
         val enable = when (command.args["enable"]?.lowercase()) {
@@ -154,20 +194,58 @@ class LibPebbleCommandHandler(
             ?: return noWatch(command.watch)
         val uuid = command.args["uuid"]?.let { runCatching { Uuid.parse(it) }.getOrNull() }
             ?: return CommandResult.Failure(ErrorCode.INVALID_ARGS, "missing/invalid 'uuid'")
-        // dict is "key=intValue" pairs in args under keys like "d.<int>"; values are sent as Int/String.
-        val dict: Map<Int, Any> = command.args
-            .filterKeys { it.startsWith("d.") }
-            .mapNotNull { (k, v) ->
-                val key = k.removePrefix("d.").toIntOrNull() ?: return@mapNotNull null
-                val value: Any = v.toIntOrNull() ?: v
-                key to value
-            }
-            .toMap()
-        if (dict.isEmpty()) return CommandResult.Failure(ErrorCode.INVALID_ARGS, "empty appmessage dict")
+        val dict = try { AppMessageArgs.decode(command.args) } catch (e: IllegalArgumentException) {
+            return CommandResult.Failure(ErrorCode.INVALID_ARGS, e.message ?: "invalid dictionary")
+        }
         val txn = device.transactionSequence.next()
-        val result = device.sendAppMessage(AppMessageData(txn, uuid, dict))
+        val result = withTimeoutOrNull(4_500) { device.sendAppMessage(AppMessageData(txn, uuid, dict)) }
+            ?: return CommandResult.Failure(ErrorCode.TIMEOUT, "AppMessage acknowledgement timed out; delivery is unknown")
         val acked = result is AppMessageResult.ACK
-        return CommandResult.Ok(mapOf("uuid" to uuid.toString(), "acked" to acked.toString()))
+        return CommandResult.Ok(mapOf("uuid" to uuid.toString(), "acked" to acked.toString(), "serial" to device.serial, "transaction_id" to txn.toString()))
+    }
+
+    @Serializable
+    private data class DesiredSubscription(val uuid: String, val watch: String? = null, val ownership: String = "observe")
+    private suspend fun subscribeAppMessage(command: CommandEnvelope, clientIdentity: String): CommandResult {
+        if (clientIdentity.isBlank()) return CommandResult.Failure(ErrorCode.NOT_AUTHORIZED, "missing verified client identity")
+        if (command.args["mode"] == "replace") {
+            if (!command.watch.isNullOrBlank()) return CommandResult.Failure(ErrorCode.INVALID_ARGS, "replace uses per-entry watch selectors")
+            val entries = runCatching { json.decodeFromString<List<DesiredSubscription>>(command.args["subscriptions_json"] ?: "") }.getOrNull()
+                ?: return CommandResult.Failure(ErrorCode.INVALID_ARGS, "invalid subscriptions_json")
+            if (entries.size > 256) return CommandResult.Failure(ErrorCode.INVALID_ARGS, "too many subscriptions")
+            val desired = ArrayList<AutomationAppMessageHook.DesiredSubscription>()
+            val deferred = ArrayList<String>()
+            for (entry in entries) {
+                val uuid = runCatching { Uuid.parse(entry.uuid).toString() }.getOrNull()
+                    ?: return CommandResult.Failure(ErrorCode.INVALID_ARGS, "invalid subscription UUID")
+                if (entry.ownership !in setOf("observe", "tasker")) return CommandResult.Failure(ErrorCode.INVALID_ARGS, "invalid ownership")
+                val address = if (entry.watch.isNullOrBlank()) null else {
+                    val known = resolveKnown(entry.watch)?.identifier?.asString
+                    if (known == null) { deferred += entry.watch; continue }
+                    known
+                }
+                desired += AutomationAppMessageHook.DesiredSubscription(uuid, address, entry.ownership == "tasker")
+            }
+            AutomationAppMessageHook.replaceOwner(clientIdentity, desired)
+            return CommandResult.Ok(mapOf("subscriptions" to desired.size.toString(), "deferred_watches" to json.encodeToString(deferred.distinct())))
+        }
+        if (command.args["mode"] != null) return CommandResult.Failure(ErrorCode.INVALID_ARGS, "invalid subscription mode")
+        val uuid = command.args["uuid"]?.let { runCatching { Uuid.parse(it) }.getOrNull() }
+            ?: return CommandResult.Failure(ErrorCode.INVALID_ARGS, "missing/invalid uuid")
+        val enable = when (command.args["enable"]?.lowercase()) {
+            null, "true", "1", "on" -> true
+            "false", "0", "off" -> false
+            else -> return CommandResult.Failure(ErrorCode.INVALID_ARGS, "invalid enable")
+        }
+        val ownership = command.args["ownership"]?.lowercase() ?: "observe"
+        if (ownership !in setOf("observe", "tasker")) {
+            return CommandResult.Failure(ErrorCode.INVALID_ARGS, "ownership must be observe or tasker")
+        }
+        val address = if (command.watch.isNullOrBlank()) null else
+            resolveKnown(command.watch)?.identifier?.asString ?: return noWatch(command.watch)
+        if (enable) AutomationAppMessageHook.subscribe(clientIdentity, uuid.toString(), address, exclusive = ownership == "tasker")
+        else AutomationAppMessageHook.unsubscribe(clientIdentity, uuid.toString(), address)
+        return CommandResult.Ok(mapOf("uuid" to uuid.toString(), "subscribed" to enable.toString(), "ownership" to ownership))
     }
 
     // --- notification.send (builds a TimelineNotification; custom actions round-trip as notif.action) ---
@@ -178,7 +256,7 @@ class LibPebbleCommandHandler(
         val type: String = "generic",
     )
 
-    private suspend fun sendNotification(command: CommandEnvelope): CommandResult {
+    private suspend fun sendNotification(command: CommandEnvelope, clientIdentity: String = ""): CommandResult {
         val a = command.args
         val titleArg = a["title"]?.takeIf { it.isNotBlank() }
         val bodyArg = a["body"]?.takeIf { it.isNotBlank() }
@@ -186,8 +264,15 @@ class LibPebbleCommandHandler(
         val iconArg = a["icon"]?.let { name -> TimelineIcon.entries.firstOrNull { it.name.equals(name, ignoreCase = true) } }
         val vibePattern: List<UInt>? = CommandArgs.vibePattern(a["vibe"])
         val actionDefs: List<NotifAction> = a["actions_json"]?.takeIf { it.isNotBlank() }?.let { raw ->
-            runCatching { json.decodeFromString<List<NotifAction>>(raw) }.getOrNull()
+            try { json.decodeFromString<List<NotifAction>>(raw) } catch (e: IllegalArgumentException) {
+                return CommandResult.Failure(ErrorCode.INVALID_ARGS, "invalid actions_json")
+            }
         } ?: emptyList()
+        val actionIds = actionDefs.mapIndexed { index, def -> def.id ?: index.toString() }
+        if (actionDefs.size > 255 || actionIds.any { it.isBlank() } || actionIds.distinct().size != actionIds.size ||
+            actionDefs.any { it.label.isBlank() || it.type.trim().lowercase() !in setOf("generic", "dismiss", "reply", "response", "open", "openwatchapp", "launch") }) {
+            return CommandResult.Failure(ErrorCode.INVALID_ARGS, "invalid or duplicate notification actions")
+        }
 
         val notification = buildTimelineNotification(
             parentId = ANDROID_NOTIFICATIONS_UUID,
@@ -218,7 +303,9 @@ class LibPebbleCommandHandler(
                         type = "notif.action",
                         data = mapOf(
                             "item_id" to notification.itemId.toString(),
-                            "action_id" to index.toString(),
+                            "action_id" to actionIds[index],
+                            "action" to def.label,
+                            "pkg" to clientIdentity,
                             "label" to def.label,
                             "type" to def.type,
                         ),
@@ -230,7 +317,7 @@ class LibPebbleCommandHandler(
         }
 
         libPebble.sendNotification(notification, handlers)
-        return CommandResult.Ok(mapOf("item_id" to notification.itemId.toString(), "delivered" to "true"))
+        return CommandResult.Ok(mapOf("item_id" to notification.itemId.toString(), "queued" to "true", "delivered" to "false", "delivery_status" to "queued"))
     }
 
     private fun String.toActionType(): TimelineItem.Action.Type = when (trim().lowercase()) {
@@ -246,8 +333,14 @@ class LibPebbleCommandHandler(
         if (prefKey.isNullOrEmpty()) return CommandResult.Failure(ErrorCode.INVALID_ARGS, "missing 'pref_key'")
         val pref = WatchPref.from(prefKey)
             ?: return CommandResult.Failure(ErrorCode.INVALID_ARGS, "unknown pref '$prefKey'")
-        val raw = command.args["pref_value"].orEmpty()
+        val raw = command.args["pref_value"] ?: return CommandResult.Failure(ErrorCode.INVALID_ARGS, "missing pref_value")
         val encoded = if (pref.type == WatchPrefType.TypeBoolean) CommandArgs.normalizeBool(raw) else raw
+        if (pref.type == WatchPrefType.TypeBoolean && encoded !in setOf("0", "1")) {
+            return CommandResult.Failure(ErrorCode.INVALID_ARGS, "invalid boolean pref_value")
+        }
+        if (pref is NumberWatchPref && encoded.toLongOrNull()?.let { it in pref.min..pref.max } != true) {
+            return CommandResult.Failure(ErrorCode.INVALID_ARGS, "numeric pref_value out of range")
+        }
         return applyPref(pref, encoded)
     }
 
@@ -258,6 +351,7 @@ class LibPebbleCommandHandler(
         } catch (e: Exception) {
             return CommandResult.Failure(ErrorCode.INVALID_ARGS, "bad value for '${pref.id}': ${e.message}")
         }
+        if (pref.encodeValue(value) != encoded) return CommandResult.Failure(ErrorCode.INVALID_ARGS, "invalid value for '${pref.id}'")
         libPebble.setWatchPref(WatchPreference(pref, value))
         return CommandResult.Ok(mapOf("pref_id" to pref.id, "value" to pref.encodeValue(value)))
     }
@@ -285,18 +379,18 @@ class LibPebbleCommandHandler(
     private fun resolveConnected(selector: String?): CommonConnectedDevice? {
         val connected = libPebble.watches.value.filterIsInstance<CommonConnectedDevice>()
         return if (selector.isNullOrBlank()) {
-            connected.firstOrNull()
+            connected.singleOrNull()
         } else {
-            connected.firstOrNull { it.serial == selector || it.identifier.asString == selector }
+            connected.singleOrNull { it.serial == selector || it.identifier.asString == selector }
         }
     }
 
     private fun resolveKnown(selector: String?): KnownPebbleDevice? {
         val known = libPebble.watches.value.filterIsInstance<KnownPebbleDevice>()
         return if (selector.isNullOrBlank()) {
-            known.firstOrNull()
+            known.singleOrNull()
         } else {
-            known.firstOrNull { it.serial == selector || it.identifier.asString == selector }
+            known.singleOrNull { it.serial == selector || it.identifier.asString == selector }
         }
     }
 
@@ -304,7 +398,7 @@ class LibPebbleCommandHandler(
         logger.d { "no matching watch for selector=$selector" }
         return CommandResult.Failure(
             ErrorCode.INVALID_ARGS,
-            if (selector.isNullOrBlank()) "no connected watch" else "no watch matching '$selector'",
+            if (selector.isNullOrBlank()) "no unique eligible watch; select a watch" else "no unique eligible watch matching '$selector'",
         )
     }
 }

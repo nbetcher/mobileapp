@@ -32,6 +32,11 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.flow.first
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.offsetAt
 import kotlin.concurrent.atomics.AtomicReference
@@ -66,7 +71,6 @@ class SystemService(
         null
     private var firmwareUpdateStatusResponseCallback: CompletableDeferred<SystemMessage.FirmwareUpdateStatusResponse>? =
         null
-    private var pongCallback: CompletableDeferred<PingPong.Pong>? = null
 
     suspend fun requestWatchVersion(): WatchInfo {
         val callback = CompletableDeferred<WatchVersionResponse>()
@@ -143,12 +147,20 @@ class SystemService(
         return withTimeoutOrNull(FIRMWARE_UPDATE_STATUS_TIMEOUT) { callback.await() }
     }
 
-    override suspend fun sendPing(cookie: UInt): UInt {
-        // TODO can just read the inbound messages directly in these
-        val pong = CompletableDeferred<PingPong.Pong>()
-        pongCallback = pong
-        protocolHandler.send(PingPong.Ping(cookie))
-        return pong.await().cookie.get()
+    override suspend fun sendPing(cookie: UInt): UInt = withTimeout(5_000) {
+        coroutineScope {
+            // Subscribe before sending: a synchronous/fast response must not be lost. Each call
+            // owns its waiter, so concurrent cookies cannot replace another call's callback.
+            val pong = async(start = CoroutineStart.UNDISPATCHED) {
+                protocolHandler.inboundMessages.first { it is PingPong.Pong && it.cookie.get() == cookie } as PingPong.Pong
+            }
+            try {
+                protocolHandler.send(PingPong.Ping(cookie))
+                pong.await().cookie.get()
+            } finally {
+                pong.cancel()
+            }
+        }
     }
 
     override fun resetIntoPrf() {
@@ -206,11 +218,6 @@ class SystemService(
                     is SystemMessage.FirmwareUpdateStatusResponse -> {
                         firmwareUpdateStatusResponseCallback?.complete(packet)
                         firmwareUpdateStatusResponseCallback = null
-                    }
-
-                    is PingPong.Pong -> {
-                        pongCallback?.complete(packet)
-                        pongCallback = null
                     }
 
                     is TimeMessage.GetTimeUtcRequest-> {

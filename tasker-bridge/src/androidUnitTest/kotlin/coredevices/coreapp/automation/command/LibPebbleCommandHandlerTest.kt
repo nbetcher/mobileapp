@@ -13,6 +13,7 @@ import io.rebble.libpebblecommon.connection.CommonConnectedDevice
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.connection.PebbleConnectionEvent
 import io.rebble.libpebblecommon.connection.PebbleDevice
+import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdater
 import io.rebble.libpebblecommon.connection.endpointmanager.timeline.CustomTimelineActionHandler
 import io.rebble.libpebblecommon.database.dao.WatchPreference
 import io.rebble.libpebblecommon.database.entity.QuickLaunchSetting
@@ -34,6 +35,7 @@ import kotlin.test.assertTrue
  * info, notification build + custom-action round-trip, set-pref, quick-launch routing, and the
  * watch.connected event — at the actuation layer, not just compilation.
  */
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class LibPebbleCommandHandlerTest {
 
     private fun fakeWatch(serialId: String = "Q3050ABC"): CommonConnectedDevice = mockk(relaxed = true) {
@@ -41,6 +43,8 @@ class LibPebbleCommandHandlerTest {
         every { name } returns "Pebble Time 2"
         every { runningFwVersion } returns "4.6.0"
         every { batteryLevel } returns 88
+        every { firmwareUpdateState } returns FirmwareUpdater.FirmwareUpdateStatus.NotInProgress.Idle()
+        every { devConnectionActive } returns MutableStateFlow(false)
     }
 
     private fun handler(lp: LibPebble) = LibPebbleCommandHandler(lp, EventDispatcher(bootId = "test"))
@@ -78,7 +82,8 @@ class LibPebbleCommandHandlerTest {
         )
 
         assertTrue(result is CommandResult.Ok)
-        assertEquals("true", result.data["delivered"])
+        assertEquals("false", result.data["delivered"])
+        assertEquals("true", result.data["queued"])
         // Both custom actions were parsed onto the notification.
         assertEquals(2, notifSlot.captured.content.actions.size)
 
@@ -90,6 +95,29 @@ class LibPebbleCommandHandlerTest {
         assertEquals(1, events.size)
         assertEquals("notif.action", events.first().type)
         assertEquals("Ack", events.first().data["label"])
+        assertEquals("a", events.first().data["action_id"])
+    }
+
+    @Test
+    fun notificationActionFallbackAndOriginAreStable_withoutClaimingDelivery() = runTest {
+        val lp = mockk<LibPebble>(relaxed = true)
+        var capturedHandlers: Map<UByte, CustomTimelineActionHandler>? = null
+        coEvery { lp.sendNotification(any(), any()) } answers { capturedHandlers = secondArg() }
+        val dispatcher = EventDispatcher(bootId = "test")
+        val handler = LibPebbleCommandHandler(lp, dispatcher)
+        val result = handler.handle(CommandEnvelope(
+            type = CommandCatalog.NOTIFICATION_SEND,
+            args = mapOf("actions_json" to """[{"label":"First"},{"id":"custom-id","label":"Second"}]""", "pkg" to "spoofed"),
+        ), "verified.package")
+        assertTrue(result is CommandResult.Ok)
+        assertEquals("queued", result.data["delivery_status"])
+        assertEquals("false", result.data["delivered"])
+        capturedHandlers!!.getValue(0u).invoke(emptyList())
+        capturedHandlers!!.getValue(1u).invoke(emptyList())
+        val events = dispatcher.since(0)
+        assertEquals(listOf("0", "custom-id"), events.map { it.data["action_id"] })
+        assertEquals(listOf("First", "Second"), events.map { it.data["action"] })
+        assertTrue(events.all { it.data["pkg"] == "verified.package" })
     }
 
     @Test

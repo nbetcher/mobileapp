@@ -12,8 +12,11 @@ import coredevices.coreapp.automation.CommandEnvelope
  * for domain failures (e.g. no connected watch, bad UUID). Throwing is also tolerated by the executor
  * (mapped to INTERNAL), but returning a typed failure is preferred.
  */
-interface CommandHandler {
+fun interface CommandHandler {
     suspend fun handle(command: CommandEnvelope): CommandResult
+
+    /** Identity supplied by the verified service, never read from caller-controlled arguments. */
+    suspend fun handle(command: CommandEnvelope, clientIdentity: String): CommandResult = handle(command)
 }
 
 sealed interface CommandResult {

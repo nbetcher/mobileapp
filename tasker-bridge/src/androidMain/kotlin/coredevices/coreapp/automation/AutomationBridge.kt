@@ -10,6 +10,9 @@ import coredevices.coreapp.automation.events.PerWatchCollector
 import coredevices.coreapp.automation.events.SystemEventCollector
 import coredevices.coreapp.automation.events.TimelineCollector
 import coredevices.coreapp.automation.trust.ClientTrustStore
+import coredevices.coreapp.automation.trust.PackageInspector
+import coredevices.coreapp.automation.trust.hexToBytesOrNull
+import coredevices.coreapp.automation.events.EventAccessPolicy
 import io.rebble.libpebblecommon.automation.AutomationAppMessageHook
 import io.rebble.libpebblecommon.automation.AutomationNotificationHooks
 import io.rebble.libpebblecommon.automation.AutomationTimelineHook
@@ -19,6 +22,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.runBlocking
 
 /**
  * App-side endpoint of the automation (Tasker) integration — the one object the host app touches
@@ -32,6 +36,7 @@ class AutomationBridge(
     private val trustStore: ClientTrustStore,
     private val settings: AutomationSettings,
     private val clientTether: ClientTether,
+    private val inspector: PackageInspector,
 ) {
     private val logger = Logger.withTag("AutomationBridge")
 
@@ -44,9 +49,10 @@ class AutomationBridge(
     private val perWatch = PerWatchCollector(libPebble, dispatcher)
     private val system = SystemEventCollector(libPebble, dispatcher)
     private val notifications = NotificationCollector(dispatcher, settings)
-    private val appMessages = AppMessageCollector(dispatcher)
+    private val appMessages = AppMessageCollector(dispatcher, libPebble)
     private val timeline = TimelineCollector(dispatcher)
     private var started = false
+    private val policyLock = Any()
 
     /** Idempotent. Call once from the host Application after Koin starts. */
     fun init() {
@@ -58,6 +64,44 @@ class AutomationBridge(
         // getEventsSince recovery path respect it uniformly.
         dispatcher.categoryGate = { category ->
             trustStore.masterEnabled.value && settings.isCategoryEnabled(category)
+        }
+        dispatcher.deliveryFilter = { event ->
+            val visible = event.copy(watch = EventAccessPolicy.watch(event.watch,
+                AutomationSettings.CATEGORIES.filter(settings::isCategoryEnabled).toSet()))
+            if (event.category == "notifications") {
+                val hidden = if (!settings.notificationContentEnabled.value) setOf("title", "text", "body", "reply_text")
+                    else if (settings.redactNotificationContent.value) setOf("text", "body", "reply_text") else emptySet()
+                visible.copy(data = event.data.filterKeys { it !in hidden } +
+                    ("redacted" to (!settings.notificationContentEnabled.value || settings.redactNotificationContent.value).toString()) +
+                    ("title_shared" to settings.notificationContentEnabled.value.toString()))
+            } else visible
+        }
+        fun policyAllows(owner: String): Boolean {
+            val record = trustStore.get(owner) ?: return false
+            val cert = record.certSha256.hexToBytesOrNull() ?: return false
+            return trustStore.masterEnabled.value && settings.isCategoryEnabled("apps") &&
+                "apps" in record.categories && inspector.hasSigningCert(owner, cert)
+        }
+        AutomationAppMessageHook.ownerAllowed = { owner -> policyAllows(owner) && listenerHub.hasAuthorizedOwner(owner) }
+        var previousOwners = trustStore.clients.value.keys.toSet()
+        fun clearUnauthorizedSubscriptions() {
+            val owners = previousOwners + trustStore.clients.value.keys
+            owners.filterNot(::policyAllows).forEach { owner -> runBlocking { AutomationAppMessageHook.clearOwner(owner) } }
+            previousOwners = trustStore.clients.value.keys.toSet()
+        }
+        trustStore.onPolicyChanged = {
+            synchronized(policyLock) {
+                listenerHub.revalidate()
+                dispatcher.reconcilePolicy()
+                clearUnauthorizedSubscriptions()
+            }
+        }
+        settings.onPolicyChanged = {
+            synchronized(policyLock) {
+                listenerHub.invalidateAll()
+                dispatcher.reconcilePolicy()
+                clearUnauthorizedSubscriptions()
+            }
         }
         connectivity.start(scope)
         perWatch.start(scope)
@@ -79,9 +123,14 @@ class AutomationBridge(
     fun stop() {
         if (!started) return
         started = false
+        trustStore.onPolicyChanged = null
+        settings.onPolicyChanged = null
         AutomationNotificationHooks.onSent = null
         AutomationNotificationHooks.onAction = null
         AutomationAppMessageHook.onReceived = null
+        AutomationAppMessageHook.ownerAllowed = null
+        runBlocking { AutomationAppMessageHook.clear() }
+        listenerHub.invalidateAll()
         AutomationTimelineHook.onAction = null
         // Cancel the collectors FIRST: ClientTether's reconcile loop lives in this scope, and a
         // pending emission arriving after stop() would re-bind clients that nothing would ever

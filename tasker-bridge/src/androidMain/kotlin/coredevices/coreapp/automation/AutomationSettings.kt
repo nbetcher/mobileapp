@@ -18,8 +18,16 @@ import kotlinx.coroutines.flow.asStateFlow
  * notification content OFF + redacted. The master switch gates everything on top of these.
  */
 class AutomationSettings(context: Context) {
+    @Volatile var onPolicyChanged: (() -> Unit)? = null
     private val prefs: SharedPreferences =
         context.getSharedPreferences("automation_settings", Context.MODE_PRIVATE)
+    @Volatile var authorityRevision: String = prefs.getString("authority_revision", null)
+        ?: java.util.UUID.randomUUID().toString().also { prefs.edit().putString("authority_revision", it).apply() }
+        private set
+    private fun reviseAuthority() {
+        authorityRevision = java.util.UUID.randomUUID().toString()
+        prefs.edit().putString("authority_revision", authorityRevision).apply()
+    }
 
     private val _categories = MutableStateFlow(loadCategories())
     /** Per-category enabled map (category name -> enabled). */
@@ -38,19 +46,28 @@ class AutomationSettings(context: Context) {
     /** True when [category] is currently enabled. Unknown categories default to enabled. */
     fun isCategoryEnabled(category: String): Boolean = _categories.value[category] ?: true
 
-    fun setCategoryEnabled(category: String, on: Boolean) {
+    @Synchronized fun setCategoryEnabled(category: String, on: Boolean) {
+        if (isCategoryEnabled(category) == on) return
+        reviseAuthority()
         prefs.edit().putBoolean(catKey(category), on).apply()
         _categories.value = _categories.value + (category to on)
+        onPolicyChanged?.invoke()
     }
 
-    fun setNotificationContentEnabled(on: Boolean) {
+    @Synchronized fun setNotificationContentEnabled(on: Boolean) {
+        if (_notificationContentEnabled.value == on) return
+        reviseAuthority()
         prefs.edit().putBoolean(KEY_NOTIF_CONTENT, on).apply()
         _notificationContentEnabled.value = on
+        onPolicyChanged?.invoke()
     }
 
-    fun setRedactNotificationContent(on: Boolean) {
+    @Synchronized fun setRedactNotificationContent(on: Boolean) {
+        if (_redactNotificationContent.value == on) return
+        reviseAuthority()
         prefs.edit().putBoolean(KEY_NOTIF_REDACT, on).apply()
         _redactNotificationContent.value = on
+        onPolicyChanged?.invoke()
     }
 
     private fun loadCategories(): Map<String, Boolean> =

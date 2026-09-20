@@ -23,9 +23,16 @@ import kotlinx.coroutines.launch
 import org.koin.android.ext.android.inject
 import theme.CoreAppTheme
 import theme.ThemeProvider
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Modifier
+import coredevices.coreapp.automation.AutomationPendingBanner
+import coredevices.coreapp.automation.trust.ConsentController
 
 
 class MainActivity : ComponentActivity() {
+    private val automationConsent: ConsentController by inject()
     private val pebbleDeepLinkHandler: PebbleDeepLinkHandler by inject()
     private val pebbleDelegate: PebbleAndroidDelegate by inject()
     private val themeProvider: ThemeProvider by inject()
@@ -48,7 +55,10 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            App()
+            Column(Modifier.fillMaxSize()) {
+                AutomationPendingBanner(automationConsent)
+                Box(Modifier.weight(1f)) { App() }
+            }
         }
 
         lifecycleScope.launch {
@@ -82,6 +92,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        automationConsent.reconcileNotifications()
         pebbleAppDelegate.onAppResumed()
         // Retry the background service start in case it failed while backgrounded (e.g. no CDM exemption).
         pebbleBackgroundManager.retryStartIfNeeded()

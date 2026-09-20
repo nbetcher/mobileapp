@@ -91,6 +91,8 @@ private fun ConsentScreen(consent: ConsentController, settings: AutomationSettin
     val master by consent.masterEnabled.collectAsState()
     val pending by consent.pending.collectAsState()
     val approved by consent.clients.collectAsState()
+    val denied by consent.denied.collectAsState()
+    var approvalError by remember { mutableStateOf<String?>(null) }
     val categories by settings.categories.collectAsState()
     val contentOn by settings.notificationContentEnabled.collectAsState()
     val redact by settings.redactNotificationContent.collectAsState()
@@ -187,6 +189,10 @@ private fun ConsentScreen(consent: ConsentController, settings: AutomationSettin
             }
             Spacer(Modifier.height(16.dp))
 
+            if (!consent.notificationsAvailable()) {
+                Text("Automation alerts are disabled in Android. Pending requests remain available here.")
+            }
+            approvalError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             Text("Pending requests", style = MaterialTheme.typography.titleMedium)
             if (pending.isEmpty()) Text("None")
             pending.forEach { p ->
@@ -201,7 +207,10 @@ private fun ConsentScreen(consent: ConsentController, settings: AutomationSettin
                         // defaulting to Normal. Higher tiers are opt-in; dangerous also needs the toggle above.
                         Text("Command tier", style = MaterialTheme.typography.labelMedium)
                         Spacer(Modifier.height(4.dp))
-                        var tier by remember(p.packageName) { mutableStateOf("normal") }
+                        var tier by remember(p.packageName, p.certSha256Hex) { mutableStateOf("normal") }
+                        var grant by remember(p.packageName, p.certSha256Hex) { mutableStateOf(DEFAULT_GRANT) }
+                        ClientCategoryChoices(grant) { grant = it }
+                        if (!master) Text("Approving will also enable the automation bridge.")
                         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                             TIERS.forEachIndexed { index, pair ->
                                 SegmentedButton(
@@ -217,8 +226,11 @@ private fun ConsentScreen(consent: ConsentController, settings: AutomationSettin
                         // read as "already approved" (mirrors the platform runtime-permission dialog).
                         Row {
                             OutlinedButton(onClick = {
-                                consent.approve(p.packageName, p.packageName, p.certSha256Hex, DEFAULT_GRANT, tier)
-                            }) { Text("Approve") }
+                                if (consent.approve(p.packageName, p.packageName, p.certSha256Hex, grant, tier)) {
+                                    approvalError = null
+                                    if (!master) consent.setMasterEnabled(true)
+                                } else approvalError = "The installed app changed or is unavailable. Review its current identity before approving."
+                            }) { Text(if (master) "Approve" else "Approve and enable") }
                             Spacer(Modifier.width(8.dp))
                             OutlinedButton(onClick = { consent.deny(p.packageName) }) { Text("Deny") }
                         }
@@ -235,11 +247,47 @@ private fun ConsentScreen(consent: ConsentController, settings: AutomationSettin
                         Text(c.label, style = MaterialTheme.typography.bodyLarge)
                         Text("${c.categories.joinToString()} · ${c.tier}", style = MaterialTheme.typography.bodySmall)
                         Spacer(Modifier.height(8.dp))
+                        var grant by remember(c) { mutableStateOf(c.categories) }
+                        var tier by remember(c) { mutableStateOf(c.tier) }
+                        ClientCategoryChoices(grant) { grant = it }
+                        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                            TIERS.forEachIndexed { index, pair ->
+                                SegmentedButton(selected = tier == pair.first, onClick = { tier = pair.first },
+                                    shape = SegmentedButtonDefaults.itemShape(index = index, count = TIERS.size)) { Text(pair.second) }
+                            }
+                        }
+                        OutlinedButton(onClick = {
+                            if (!consent.approve(c.packageName, c.label, c.certSha256, grant, tier))
+                                approvalError = "The installed app changed. Review its current identity."
+                        }) { Text("Save access") }
                         OutlinedButton(onClick = { consent.revoke(c.packageName) }) { Text("Revoke") }
                     }
                 }
             }
+            if (denied.isNotEmpty()) {
+                Text("Denied clients", style = MaterialTheme.typography.titleMedium)
+                Text("Requests from these identities stay denied until you choose to review them again.")
+                denied.keys.forEach { pkg ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(pkg, Modifier.weight(1f))
+                        OutlinedButton(onClick = { consent.reconsider(pkg) }) { Text("Review again") }
+                    }
+                }
+            }
             Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+@Composable
+private fun ClientCategoryChoices(selected: Set<String>, onChange: (Set<String>) -> Unit) {
+    Text("Allow this app to receive", style = MaterialTheme.typography.labelMedium)
+    AutomationSettings.CATEGORIES.forEach { category ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(categoryLabel(category), Modifier.weight(1f))
+            Switch(checked = category in selected, onCheckedChange = { enabled ->
+                onChange(if (enabled) selected + category else selected - category)
+            })
         }
     }
 }

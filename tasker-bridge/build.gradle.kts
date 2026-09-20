@@ -27,6 +27,10 @@ android {
         aidl = true
     }
 
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -42,6 +46,7 @@ android {
         }
         getByName("test") {
             kotlin.srcDirs("src/androidUnitTest/kotlin")
+            resources.srcDirs("src/androidUnitTest/resources")
         }
     }
 }
@@ -67,4 +72,6 @@ dependencies {
     // Relaxed mocks let the handler/collector tests simulate a connected watch (LibPebble) without
     // a physical device — the only piece that genuinely needs hardware.
     testImplementation("io.mockk:mockk:1.13.13")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.test:core:1.6.1")
 }

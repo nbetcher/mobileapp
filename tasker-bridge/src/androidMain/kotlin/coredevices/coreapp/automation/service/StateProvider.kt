@@ -1,6 +1,10 @@
 package coredevices.coreapp.automation.service
 
 import android.content.Context
+import coredevices.coreapp.automation.StateData
+import coredevices.coreapp.automation.events.SUPPORTED_STATE_CAPABILITIES
+import coredevices.coreapp.automation.events.toWatchRef
+import io.rebble.libpebblecommon.connection.bt.BluetoothState
 import coredevices.coreapp.automation.events.WatchRef
 import io.rebble.libpebblecommon.connection.CommonConnectedDevice
 import io.rebble.libpebblecommon.connection.LibPebble
@@ -9,6 +13,8 @@ import io.rebble.libpebblecommon.connection.LibPebble
 interface StateProvider {
     fun watchRefs(): List<WatchRef>
     fun appVersion(): String
+    fun supportedCapabilities(): List<String> = emptyList()
+    fun state(): StateData = StateData(watchRefs(), capabilities = supportedCapabilities())
 }
 
 class LibPebbleStateProvider(
@@ -17,17 +23,15 @@ class LibPebbleStateProvider(
 ) : StateProvider {
 
     override fun watchRefs(): List<WatchRef> =
-        libPebble.watches.value.filterIsInstance<CommonConnectedDevice>().map { device ->
-            WatchRef(
-                serial = device.serial,
-                name = device.name,
-                nickname = device.nickname,
-                model = device.watchInfo.board,
-                fw = device.runningFwVersion,
-                battery = device.batteryLevel,
-                address = device.identifier.asString,
-            )
-        }
+        libPebble.watches.value.filterIsInstance<CommonConnectedDevice>().map { it.toWatchRef() }
+
+    override fun supportedCapabilities(): List<String> = SUPPORTED_STATE_CAPABILITIES
+
+    override fun state(): StateData = StateData(
+        watches = watchRefs(),
+        bluetoothEnabled = libPebble.bluetoothEnabled.value == BluetoothState.Enabled,
+        capabilities = supportedCapabilities(),
+    )
 
     override fun appVersion(): String = try {
         @Suppress("DEPRECATION")

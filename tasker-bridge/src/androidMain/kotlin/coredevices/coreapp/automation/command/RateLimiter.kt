@@ -1,20 +1,20 @@
 package coredevices.coreapp.automation.command
 
-import kotlin.time.Clock
 
 /**
  * Per-key token-bucket rate limiter (PLAN §5.5: "per-command-type token bucket (e.g. 30/min) to
  * blunt runaway Tasker loops"). Pure logic over an injected clock so it is unit-testable; thread-safe
  * via a single lock since Binder calls arrive on a pool.
  *
- * Keyed by "$clientToken:$type" so one misbehaving profile can't starve another client, and bursts of
+ * Keyed by "$verifiedPackage:$type" so token replacement cannot replenish a client's budget, and bursts of
  * one command type don't exhaust the budget of another.
  */
 class RateLimiter(
     private val capacity: Int = DEFAULT_CAPACITY,
     private val refillPerMinute: Int = DEFAULT_REFILL_PER_MINUTE,
-    private val nowMs: () -> Long = { Clock.System.now().toEpochMilliseconds() },
+    private val nowMs: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
+    init { require(capacity > 0 && refillPerMinute >= 0) }
     private class Bucket(var tokens: Double, var lastRefillMs: Long)
 
     private val lock = Any()
@@ -27,13 +27,17 @@ class RateLimiter(
         val bucket = buckets.getOrPut(key) { Bucket(capacity.toDouble(), now) }
         val elapsed = (now - bucket.lastRefillMs).coerceAtLeast(0)
         bucket.tokens = (bucket.tokens + elapsed * refillPerMs).coerceAtMost(capacity.toDouble())
-        bucket.lastRefillMs = now
+        bucket.lastRefillMs = maxOf(bucket.lastRefillMs, now)
         if (bucket.tokens >= 1.0) {
             bucket.tokens -= 1.0
             true
         } else {
             false
         }
+    }
+
+    fun removePrefix(prefix: String) = synchronized(lock) {
+        buckets.keys.removeAll { it.startsWith(prefix) }
     }
 
     companion object {

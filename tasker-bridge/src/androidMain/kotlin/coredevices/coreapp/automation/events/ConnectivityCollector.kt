@@ -19,17 +19,21 @@ class ConnectivityCollector(
 ) {
     fun start(scope: CoroutineScope) {
         scope.launch {
+            val identities = libPebble.watches.value.associate { it.identifier.asString to it.toIdentityRef() }.toMutableMap()
             libPebble.connectionEvents.collect { event ->
                 when (event) {
-                    is PebbleConnectionEvent.PebbleConnectedEvent ->
+                    is PebbleConnectionEvent.PebbleConnectedEvent -> {
+                        identities[event.device.identifier.asString] = event.device.toWatchRef()
                         dispatcher.emit("connectivity", "watch.connected", event.device.toWatchRef())
+                    }
 
                     is PebbleConnectionEvent.PebbleDisconnectedEvent ->
                         dispatcher.emit(
                             category = "connectivity",
                             type = "watch.disconnected",
-                            // Disconnect carries only an identifier; serial/name aren't known here.
-                            watch = WatchRef(
+                            watch = identities.remove(event.identifier.asString)?.copy(devEnabled = false, fwStatus = "unavailable", fwProgress = null, currentAppUuid = null)
+                                ?: libPebble.watches.value.firstOrNull { it.identifier == event.identifier }?.toIdentityRef()
+                                ?: WatchRef(
                                 serial = event.identifier.asString,
                                 name = event.identifier.asString,
                                 address = event.identifier.asString,
@@ -53,6 +57,7 @@ class ConnectivityCollector(
                     val id = device.identifier.asString
                     presentIds.add(id)
                     val failure = device.connectionFailureInfo
+                    if (failure == null) lastFailure.remove(id)
                     if (failure != null && lastFailure.put(id, failure) != failure) {
                         dispatcher.emit(
                             category = "connectivity",

@@ -12,6 +12,6 @@ object AutomationNotificationHooks {
     /** A notification was forwarded to the watch: (packageName, title, body). */
     var onSent: ((String, String?, String?) -> Unit)? = null
 
-    /** A notification action was performed on the watch: (actionType, packageName). */
-    var onAction: ((String, String) -> Unit)? = null
+    /** A notification action was performed on the watch: (actionType, packageName, actionId). */
+    var onAction: ((String, String, Int) -> Unit)? = null
 }

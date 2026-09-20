@@ -35,4 +35,8 @@ data class WatchRef(
     val fw: String? = null,
     val battery: Int? = null,
     val address: String? = null,
+    val devEnabled: Boolean? = null,
+    val fwStatus: String? = null,
+    val fwProgress: Int? = null,
+    val currentAppUuid: String? = null,
 )

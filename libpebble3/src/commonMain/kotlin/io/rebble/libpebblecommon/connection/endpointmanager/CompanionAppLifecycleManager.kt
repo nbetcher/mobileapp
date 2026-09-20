@@ -93,6 +93,10 @@ class CompanionAppLifecycleManager(
                 runningApps.value.forEach { it.stop() }
             }
 
+            // An explicit automation subscription may own an app with no companion declaration.
+            // PKJS and declared native companions always retain their existing ACK ownership.
+            appMessagesService.setAutomationEligibility(lockerEntry.id,
+                !pbw.hasPKJS && pbw.info.companionApp?.android == null)
             val newApps = createCompanionApps(pbw, lockerEntry)
             runningApps.value = newApps
 
@@ -154,7 +158,10 @@ class CompanionAppLifecycleManager(
             watchInfo,
             appMessagesService
         )
+        var previousApp: kotlin.uuid.Uuid? = null
         appRunStateService.runningApp.onEach {
+            previousApp?.let { appMessagesService.setAutomationEligibility(it, false) }
+            previousApp = it
             handleAppStop()
             if (it != null) {
                 val lockerEntry = lockerEntryDao.getEntry(it)

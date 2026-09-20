@@ -154,7 +154,7 @@ class AndroidNotificationActionHandler(
         // BRIDGE-TAP: notif-action
         // Automation hook (ADR-008): report the watch-initiated action to an external integration.
         runCatching {
-            AutomationNotificationHooks.onAction?.invoke(notificationAction.type.name, notificationAction.packageName)
+            AutomationNotificationHooks.onAction?.invoke(notificationAction.type.name, notificationAction.packageName, actionId.toInt())
         }
         return when (notificationAction.type) {
             LibPebbleNotificationAction.ActionType.Reply -> handleReply(

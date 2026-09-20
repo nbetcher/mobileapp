@@ -4,12 +4,13 @@ package coredevices.coreapp.automation.command
  * Closed allowlist of executable command types and their required command tier (HLDD-002 §6,
  * PLAN §5.5). The [CommandExecutor] consults this map BEFORE dispatching — an unknown [type] is
  * rejected with UNSUPPORTED_COMMAND, and a type whose [tier] exceeds the caller's granted tier is
- * rejected with NOT_AUTHORIZED. No reflection: only types present here can ever run.
+ * rejected with COMMAND_NOT_AUTHORIZED. No reflection: only types present here can ever run.
  *
  * This map is part of the frozen IPC contract — entries are append-only; never repurpose a type
  * string or downgrade its tier without a protocol bump.
  */
 enum class CommandTier(val rank: Int) {
+    NONE(-1),
     /** Read/benign actuation: launch app, set watchface, send notification, ping, read info. */
     NORMAL(0),
 
@@ -25,7 +26,8 @@ enum class CommandTier(val rank: Int) {
         fun fromGrant(grant: String): CommandTier = when (grant.lowercase()) {
             "sensitive" -> SENSITIVE
             "dangerous" -> DANGEROUS
-            else -> NORMAL
+            "normal" -> NORMAL
+            else -> NONE
         }
     }
 }
@@ -43,6 +45,7 @@ object CommandCatalog {
     const val WATCH_SET_WATCHFACE = "watch.setWatchface"
     const val WATCH_SET_PREF = "watch.setPref"
     const val APPMESSAGE_SEND = "appmessage.send"
+    const val APPMESSAGE_SUBSCRIBE = "appmessage.subscribe"
     const val SYSTEM_PING = "system.ping"
     const val WATCH_CONNECT = "watch.connect"
     const val WATCH_DISCONNECT = "watch.disconnect"
@@ -59,6 +62,7 @@ object CommandCatalog {
         WATCH_LAUNCH_APP to CommandTier.NORMAL,
         WATCH_SET_WATCHFACE to CommandTier.NORMAL,
         APPMESSAGE_SEND to CommandTier.NORMAL,
+        APPMESSAGE_SUBSCRIBE to CommandTier.NORMAL,
         SYSTEM_PING to CommandTier.NORMAL,
         SYSTEM_GET_LOCKER to CommandTier.NORMAL,
         WATCH_SET_PREF to CommandTier.SENSITIVE,
@@ -66,6 +70,14 @@ object CommandCatalog {
         WATCH_CONNECT to CommandTier.SENSITIVE,
         WATCH_DISCONNECT to CommandTier.SENSITIVE,
         DEV_TOGGLE_CONNECTION to CommandTier.DANGEROUS,
+    )
+
+    /** Exact implemented commands: advertise each as `command.<type>`. */
+    val types: Set<String> get() = tiers.keys
+
+    /** These operate on shared phone-side state and never accept a watch selector. */
+    val globalTypes: Set<String> = setOf(
+        NOTIFICATION_SEND, WATCH_SET_PREF, WATCH_SET_QUICK_LAUNCH, SYSTEM_GET_LOCKER,
     )
 
     fun isKnown(type: String): Boolean = tiers.containsKey(type)

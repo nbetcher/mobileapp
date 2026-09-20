@@ -1,6 +1,7 @@
 package coredevices.coreapp.automation.events
 
 import io.rebble.libpebblecommon.connection.CommonConnectedDevice
+import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.connection.KnownPebbleDevice
 import io.rebble.libpebblecommon.connection.PebbleDevice
 
@@ -13,6 +14,10 @@ internal fun CommonConnectedDevice.toWatchRef(): WatchRef = WatchRef(
     fw = runningFwVersion,
     battery = batteryLevel,
     address = identifier.asString,
+    devEnabled = devConnectionActive.value,
+    fwStatus = firmwareUpdateState.wireStatus(),
+    fwProgress = firmwareUpdateState.wireProgress(),
+    currentAppUuid = (this as? ConnectedPebbleDevice)?.runningApp?.value?.toString(),
 )
 
 /**

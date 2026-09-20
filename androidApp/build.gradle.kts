@@ -13,7 +13,10 @@ val properties = Properties().apply {
         println("local.properties file not found")
     }
 }
-val localReleaseBuild = properties["LOCAL_RELEASE_BUILD"]?.toString()?.toBooleanStrictOrNull() ?: false
+val localReleaseBuild = providers.gradleProperty("LOCAL_RELEASE_BUILD").orNull
+    ?.toBooleanStrictOrNull()
+    ?: properties["LOCAL_RELEASE_BUILD"]?.toString()?.toBooleanStrictOrNull()
+    ?: false
 
 // Most recent tag reachable from HEAD, so a release branch versions from its own tag.
 val gitVersionName = providers.exec {

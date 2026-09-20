@@ -4,45 +4,26 @@ import android.app.Service
 import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
-import co.touchlab.kermit.Logger
-import coredevices.coreapp.automation.BridgeHello
-import coredevices.coreapp.automation.BridgeJson
-import coredevices.coreapp.automation.ClientHello
-import coredevices.coreapp.automation.ClientRecord
-import coredevices.coreapp.automation.ErrorCode
-import coredevices.coreapp.automation.EventBatch
-import coredevices.coreapp.automation.Grants
-import coredevices.coreapp.automation.IBridgeEventListener
-import coredevices.coreapp.automation.IBridgeService
-import coredevices.coreapp.automation.ResultEnvelope
-import coredevices.coreapp.automation.StateData
-import coredevices.coreapp.automation.StateResult
+import coredevices.coreapp.automation.*
+import coredevices.coreapp.automation.command.CommandCatalog
 import coredevices.coreapp.automation.command.CommandExecutor
 import coredevices.coreapp.automation.command.CommandTier
 import coredevices.coreapp.automation.events.EventDispatcher
 import coredevices.coreapp.automation.events.ListenerHub
+import coredevices.coreapp.automation.events.EventAccessPolicy
 import coredevices.coreapp.automation.trust.CallerVerifier
 import coredevices.coreapp.automation.trust.ClientTrustStore
 import coredevices.coreapp.automation.trust.ConsentController
-import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicLong
 
-/**
- * Exported AIDL endpoint of the bridge (HLDD-001 §8, HLDD-002 §3). Exported with NO permission
- * attribute — every transaction is authenticated in code via [CallerVerifier] (ADR-003).
- */
 class BridgeService : Service(), KoinComponent {
-    private val logger = Logger.withTag("AutomationBridge")
     private val verifier: CallerVerifier by inject()
     private val consent: ConsentController by inject()
     private val dispatcher: EventDispatcher by inject()
@@ -50,128 +31,135 @@ class BridgeService : Service(), KoinComponent {
     private val stateProvider: StateProvider by inject()
     private val commandExecutor: CommandExecutor by inject()
     private val trustStore: ClientTrustStore by inject()
+    private val settings: AutomationSettings by inject()
+    private val commandScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val sessions = ClientSessions { session -> listenerHub.revoke(session.token) }
 
-    // Service-owned scope for the synchronous-over-coroutine command bridge. Commands are blocked
-    // on (so the Binder thread returns a String) but run on this scope's dispatcher, not the binder
-    // pool. Bounded internally by CommandExecutor's withTimeout.
-    private val commandScope = CoroutineScope(
-        SupervisorJob() + Dispatchers.Default + CoroutineName("BridgeCommands"),
-    )
+    private fun authorized(session: ClientSessions.Session): Boolean =
+        sessions.find(session.token) == session &&
+            (verifier.verify(session.uid) as? CallerVerifier.Result.Verified)?.record == session.client
 
     private val binder = object : IBridgeService.Stub() {
-
         override fun handshake(helloJson: String): String {
+            var pending: CallerVerifier.Result.Unknown? = null
+            val reply = synchronized(trustStore) {
+                synchronized(settings) { handshakeWithStablePolicy(helloJson) { pending = it } }
+            }
+            // Consent callbacks take their own lock before the trust store.
+            pending?.let { consent.onUnknownClient(it.packageName, it.certSha256Hex, it.installSource) }
+            return reply
+        }
+        private fun handshakeWithStablePolicy(helloJson: String, pending: (CallerVerifier.Result.Unknown) -> Unit): String {
             val hello = runCatching { BridgeJson.json.decodeFromString<ClientHello>(helloJson) }.getOrNull()
-                ?: return err(ErrorCode.INVALID_ARGS, "malformed hello")
-            return when (val result = verifier.verify(Binder.getCallingUid())) {
+                ?: return err(ErrorCode.INVALID_ARGS, "Malformed hello")
+            if (hello.v != 1 || hello.kind != "hello" || hello.clientProtocol != 1)
+                return err(ErrorCode.UNSUPPORTED_VERSION, "Update both Pebble and its automation plugin")
+            val uid = Binder.getCallingUid()
+            return when (val result = verifier.verify(uid)) {
                 is CallerVerifier.Result.Verified -> {
                     val record = result.record
-                    val token = "t${tokenCounter.incrementAndGet()}"
-                    tokens[token] = record.packageName
-                    BridgeJson.json.encodeToString(
-                        BridgeHello(
-                            bootId = dispatcher.bootId,
-                            capabilities = CAPABILITIES,
-                            grants = Grants(record.categories.toList(), record.tier, contentRedacted = true),
-                            latestSeq = dispatcher.latestSeq,
-                            appVersion = stateProvider.appVersion(),
-                            clientToken = token,
-                        ),
-                    )
+                    val session = sessions.replace(uid, record)
+                    BridgeJson.json.encodeToString(BridgeHello(
+                        bootId = dispatcher.bootId,
+                        capabilities = capabilities(),
+                        grants = Grants(record.categories.filter(settings::isCategoryEnabled), record.tier,
+                            !settings.notificationContentEnabled.value || settings.redactNotificationContent.value),
+                        latestSeq = dispatcher.latestSeq,
+                        appVersion = stateProvider.appVersion(),
+                        clientToken = session.token,
+                        authorityId = "${trustStore.authorityRevision}:${trustStore.clientAuthorityRevision(record.packageName)}:${settings.authorityRevision}",
+                    ))
                 }
-
                 is CallerVerifier.Result.Unknown -> {
-                    logger.i { "consent requested by ${result.packageName}" }
-                    consent.onUnknownClient(result.packageName, result.certSha256Hex, result.installSource)
-                    err(ErrorCode.CONSENT_PENDING, "awaiting user approval")
+                    pending(result)
+                    err(ErrorCode.CONSENT_PENDING, "Review the access request in the Pebble app")
                 }
-
-                CallerVerifier.Result.CertMismatch -> err(ErrorCode.CERT_MISMATCH, "signing certificate changed")
-                CallerVerifier.Result.NotAuthorized -> err(ErrorCode.NOT_AUTHORIZED, "not authorized")
+                else -> verificationError(result)
             }
         }
 
         override fun getState(queryJson: String): String {
-            verifiedOrNull() ?: return err(ErrorCode.NOT_AUTHORIZED, "not authorized")
-            return BridgeJson.json.encodeToString(StateResult(data = StateData(stateProvider.watchRefs())))
+            val verification = verifier.verify(Binder.getCallingUid())
+            val record = (verification as? CallerVerifier.Result.Verified)?.record ?: return verificationError(verification)
+            val categories = record.categories.filter(settings::isCategoryEnabled).toSet()
+            if (categories.none { it in setOf("connectivity", "system", "apps") })
+                return err(ErrorCode.CATEGORY_DISABLED, "Watch state access is disabled in the Pebble app")
+            val state = stateProvider.state()
+            return BridgeJson.json.encodeToString(StateResult(data = state.copy(
+                watches = state.watches.mapNotNull { EventAccessPolicy.watch(it, categories) },
+                bluetoothEnabled = state.bluetoothEnabled.takeIf { "system" in categories })))
         }
 
         override fun getEventsSince(fromSeq: Long, bootId: String): String {
-            verifiedOrNull() ?: return err(ErrorCode.NOT_AUTHORIZED, "not authorized")
-            val events = if (bootId == dispatcher.bootId) dispatcher.since(fromSeq) else emptyList()
-            return BridgeJson.json.encodeToString(EventBatch(bootId = dispatcher.bootId, events = events))
+            val uid = Binder.getCallingUid()
+            val verification = verifier.verify(uid)
+            val record = (verification as? CallerVerifier.Result.Verified)?.record ?: return verificationError(verification)
+            val session = sessions.forClient(uid, record)
+            val cursor = if (bootId == dispatcher.bootId) fromSeq else 0L
+            // Long.MAX_VALUE requests registration proof only, never a replay payload.
+            val batch = dispatcher.snapshot(cursor, transform = {
+                EventAccessPolicy.event(it, record.categories.filter(settings::isCategoryEnabled).toSet())
+            }).copy(
+                subscriptionToken = session?.token?.takeIf(listenerHub::registered))
+            return BridgeJson.json.encodeToString(batch)
         }
 
         override fun registerEventListener(clientToken: String, cb: IBridgeEventListener, fromSeq: Long) {
-            val record = verifiedOrNull() ?: return
-            if (tokens[clientToken] != record.packageName) return
-            listenerHub.register(clientToken, cb, fromSeq)
+            val uid = Binder.getCallingUid()
+            val session = sessions.find(clientToken) ?: return
+            if (session.uid != uid || !authorized(session)) return
+            listenerHub.register(clientToken, cb, fromSeq,
+                authorized = { authorized(session) },
+                permitted = { it.category in session.client.categories },
+                closed = { sessions.remove(clientToken) }, ownerPackage = session.client.packageName,
+                transform = { EventAccessPolicy.event(it, session.client.categories.filter(settings::isCategoryEnabled).toSet()) },
+                goodbyeReason = { verificationError(verifier.verify(session.uid)) })
         }
 
         override fun unregisterEventListener(clientToken: String) {
-            // Tokens are sequential ("t1", "t2", ...) and the service is exported, so without this
-            // check any app could unregister another client's listener and silently stop its events.
-            val record = verifiedOrNull() ?: return
-            if (tokens[clientToken] != record.packageName) return
-            listenerHub.unregister(clientToken)
+            val session = sessions.find(clientToken) ?: return
+            if (session.uid != Binder.getCallingUid()) return
+            sessions.remove(clientToken)
         }
 
         override fun execute(clientToken: String, commandJson: String): String {
-            // Re-verify the caller on every command (mirrors registerEventListener): a revoked or
-            // master-off client is rejected mid-session, and the token must belong to this caller.
-            val record = verifiedOrNull() ?: return err(ErrorCode.NOT_AUTHORIZED, "not authorized")
-            if (tokens[clientToken] != record.packageName) {
-                return err(ErrorCode.NOT_AUTHORIZED, "unknown or stale client token")
-            }
-            // Bridge the synchronous Binder call onto the command scope; the executor enforces the
-            // allowlist, tier gate, dangerous toggle, rate limit, and its own per-command timeout.
+            val verification = verifier.verify(Binder.getCallingUid())
+            val record = (verification as? CallerVerifier.Result.Verified)?.record ?: return verificationError(verification)
+            val session = sessions.find(clientToken)
+            if (session == null || session.uid != Binder.getCallingUid() || session.client != record)
+                return err(ErrorCode.NOT_AUTHORIZED, "The automation session expired; reconnect to Pebble")
+            val command = runCatching { BridgeJson.json.decodeFromString<CommandEnvelope>(commandJson) }.getOrNull()
+            if (command?.type == CommandCatalog.APPMESSAGE_SUBSCRIBE &&
+                !(command.args["mode"] == null && command.args["enable"]?.trim()?.lowercase() in setOf("false", "0", "off")) &&
+                ("apps" !in record.categories || !settings.isCategoryEnabled("apps")))
+                return err(ErrorCode.CATEGORY_DISABLED, "AppMessage receiving access is disabled in the Pebble app")
             return runBlocking(commandScope.coroutineContext) {
-                commandExecutor.execute(
-                    clientToken = clientToken,
-                    commandJson = commandJson,
+                if (!authorized(session)) return@runBlocking err(ErrorCode.NOT_AUTHORIZED,
+                    "Automation access changed before the command started")
+                commandExecutor.execute(clientToken = clientToken, commandJson = commandJson,
                     grantedTier = CommandTier.fromGrant(record.tier),
                     dangerousEnabled = trustStore.dangerousCommandsEnabled.value,
-                )
+                    clientIdentity = record.packageName)
             }
         }
-
-        private fun verifiedOrNull(): ClientRecord? =
-            (verifier.verify(Binder.getCallingUid()) as? CallerVerifier.Result.Verified)?.record
     }
 
-    override fun onBind(intent: Intent?): IBinder = binder
+    private fun capabilities(): List<String> = listOf("events.core", "events.notifications", "events.health",
+        "events.cursor", "events.registration_ack", "events.registration_ack_only", "events.paged", "appmessages.replace_subscriptions", "commands.core", "commands.sensitive", "commands.dangerous", "appmessages") +
+        CommandCatalog.types.map { "command.$it" } + CommandCatalog.globalTypes.map { "command.global.$it" } +
+        stateProvider.supportedCapabilities()
 
+    private fun verificationError(result: CallerVerifier.Result): String = when (result) {
+        CallerVerifier.Result.Denied -> err(ErrorCode.ACCESS_DENIED, "Denied in the Pebble app")
+        CallerVerifier.Result.CertMismatch -> err(ErrorCode.CERT_MISMATCH, "Pebble rejected this plugin's signing certificate")
+        is CallerVerifier.Result.Unknown -> err(ErrorCode.CONSENT_PENDING, "Review access in the Pebble app")
+        else -> err(ErrorCode.NOT_AUTHORIZED, if (!trustStore.masterEnabled.value) "Automation is disabled in the Pebble app" else "Not authorized in the Pebble app")
+    }
+    private fun err(code: String, message: String): String = BridgeJson.json.encodeToString(ResultEnvelope.error(code, message))
+    override fun onBind(intent: Intent?): IBinder = binder
     override fun onDestroy() {
+        sessions.clear()
         commandScope.cancel()
         super.onDestroy()
-    }
-
-    private fun err(code: String, message: String): String =
-        BridgeJson.json.encodeToString(ResultEnvelope.error(code, message))
-
-    companion object {
-        // Capability set advertised at handshake (HLDD-002 §4.2). Coarse feature flags the plugin
-        // gates whole UI tiers on (BridgeSession.CAP_*); the per-client grant + command tier still
-        // authorize each individual call on top of these. Append-only contract — every entry below is
-        // backed by a shipped feature:
-        //   events.core          connectivity / apps / media / calls / dev / system / timeline / watch.state
-        //   events.notifications NotificationCollector (notif.sent, notif.action)
-        //   events.health        SystemEventCollector (health.updated)
-        //   commands.core        all NORMAL-tier CommandCatalog entries (handled in LibPebbleCommandHandler)
-        //   commands.sensitive   all SENSITIVE-tier entries (setPref, setQuickLaunch, connect, disconnect)
-        //   commands.dangerous   dev.toggleConnection (also gated by the app's dangerous-commands toggle)
-        //   appmessages          appmessage.send command + appmsg.received event
-        // Deliberately NOT advertised: screenshot, state.extended — no shipped backing yet.
-        private val CAPABILITIES = listOf(
-            "events.core",
-            "events.notifications",
-            "events.health",
-            "commands.core",
-            "commands.sensitive",
-            "commands.dangerous",
-            "appmessages",
-        )
-        private val tokens = ConcurrentHashMap<String, String>() // clientToken -> package
-        private val tokenCounter = AtomicLong(0)
     }
 }

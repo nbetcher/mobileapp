@@ -12,6 +12,9 @@ import coredevices.coreapp.automation.trust.hexToBytesOrNull
 import io.rebble.libpebblecommon.connection.CommonConnectedDevice
 import io.rebble.libpebblecommon.connection.LibPebble
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -48,9 +51,15 @@ class ClientTether(
 
     /** package -> live ServiceConnection. Guarded by [reconcile]/[stop] being @Synchronized. */
     private val bound = HashMap<String, ServiceConnection>()
+    private val retries = HashMap<String, Job>()
+    private val failures = HashMap<String, Int>()
+    private var wanted = emptySet<String>()
+    private var scope: CoroutineScope? = null
+    private var generation = 0L
 
     /** Observe (connected ∧ master ∧ approved-clients) and reconcile the set of bound clients. */
     fun start(scope: CoroutineScope) {
+        this.scope = scope
         scope.launch {
             combine(
                 libPebble.watches
@@ -71,6 +80,9 @@ class ClientTether(
 
     @Synchronized
     private fun reconcile(wanted: Set<String>) {
+        (wanted - this.wanted).forEach { failures.remove(it) }
+        this.wanted = wanted
+        retries.keys.filter { it !in wanted }.forEach { retries.remove(it)?.cancel() }
         // Unbind anything no longer wanted (disconnect, master off, revoked, or cert no longer matches).
         val it = bound.entries.iterator()
         while (it.hasNext()) {
@@ -83,7 +95,7 @@ class ClientTether(
         }
         // Bind anything newly wanted.
         for (pkg in wanted) {
-            if (!bound.containsKey(pkg)) bindClient(pkg)
+            if (!bound.containsKey(pkg) && retries[pkg]?.isActive != true && (failures[pkg] ?: 0) < 3) bindClient(pkg)
         }
     }
 
@@ -96,8 +108,16 @@ class ClientTether(
     }
 
     private fun bindClient(pkg: String) {
+        val attempt = generation
+        val connected = AtomicBoolean(false)
         val conn = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+                synchronized(this@ClientTether) {
+                    if (attempt != generation || bound[pkg] !== this) return
+                    connected.set(true)
+                    failures.remove(pkg)
+                    retries.remove(pkg)?.cancel()
+                }
                 logger.i { "tether: bound $pkg ($name)" }
             }
 
@@ -105,7 +125,10 @@ class ClientTether(
                 // Client process died while bound; the system will rebind (BIND_AUTO_CREATE), reviving it.
                 logger.i { "tether: $pkg disconnected (system will rebind)" }
             }
+            override fun onBindingDied(name: ComponentName?) = lostBinding(pkg, this, attempt)
+            override fun onNullBinding(name: ComponentName?) = lostBinding(pkg, this, attempt)
         }
+        bound[pkg] = conn
         val intent = Intent(ACTION_KEEP_ALIVE).setPackage(pkg)
         val ok = try {
             appContext.bindService(intent, conn, Context.BIND_AUTO_CREATE)
@@ -114,18 +137,48 @@ class ClientTether(
             false
         }
         if (ok) {
-            bound[pkg] = conn
+            if (bound[pkg] === conn && !connected.get()) {
+                retries[pkg] = scope?.launch {
+                    delay(10_000)
+                    lostBinding(pkg, conn, attempt)
+                } ?: return
+            }
             logger.i { "tether: bindService accepted for $pkg" }
         } else {
             // No KEEP_ALIVE service / not visible / refused. Roll back the (partial) bind.
-            runCatching { appContext.unbindService(conn) }
+            lostBinding(pkg, conn, attempt)
             logger.w { "tether: bindService returned false for $pkg (no KEEP_ALIVE service?)" }
         }
+    }
+
+    @Synchronized private fun lostBinding(pkg: String, conn: ServiceConnection, attempt: Long) {
+        if (attempt != generation || bound[pkg] !== conn) return
+        bound.remove(pkg)
+        runCatching { appContext.unbindService(conn) }
+        retries.remove(pkg)?.cancel()
+        if (pkg !in wanted) return
+        val failureCount = (failures[pkg] ?: 0) + 1
+        failures[pkg] = failureCount
+        if (failureCount >= 3) return
+        retries[pkg] = scope?.launch {
+            delay(2_000L * failureCount)
+            val record = trustStore.get(pkg)
+            val allowed = record != null && trustStore.masterEnabled.value && verify(record)
+            synchronized(this@ClientTether) {
+                retries.remove(pkg)
+                if (attempt == generation && pkg in wanted && allowed && !bound.containsKey(pkg)) bindClient(pkg)
+            }
+        } ?: return
     }
 
     /** Unbind everything (bridge teardown). */
     @Synchronized
     fun stop() {
+        generation++
+        wanted = emptySet()
+        retries.values.forEach { it.cancel() }
+        retries.clear()
+        failures.clear()
         bound.values.forEach { runCatching { appContext.unbindService(it) } }
         bound.clear()
     }

@@ -10,6 +10,11 @@ import io.rebble.libpebblecommon.packets.AppMessage
 import io.rebble.libpebblecommon.packets.AppMessageTuple
 import io.rebble.libpebblecommon.services.ProtocolService
 import kotlinx.coroutines.async
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.coroutineScope
+import kotlinx.atomicfu.atomic
+import io.rebble.libpebblecommon.automation.AutomationAppMessageHook
+import io.rebble.libpebblecommon.connection.PebbleIdentifier
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
@@ -29,23 +34,37 @@ private val APPMESSAGE_TIMEOUT = 10.seconds
 
 class AppMessageService(
     private val protocolHandler: PebbleProtocolHandler,
-    private val scope: ConnectionCoroutineScope
+    private val scope: ConnectionCoroutineScope,
+    private val identifier: PebbleIdentifier,
 ) : ProtocolService, ConnectedPebble.AppMessages {
     private val logger = Logger.withTag("AppMessageService")
     private val receivedMessages = HashMap<Uuid, Channel<AppMessageData>>()
     override val transactionSequence: Iterator<UByte> = AppMessageTransactionSequence().iterator()
     private val mapAccessMutex = Mutex()
 
+    // null/absent metadata retains the ordinary companion path. Published before companions start.
+    private val taskerEligible = atomic<Set<Uuid>>(emptySet())
+    fun setAutomationEligibility(uuid: Uuid, eligible: Boolean) {
+        taskerEligible.value = if (eligible) taskerEligible.value + uuid else taskerEligible.value - uuid
+    }
+
     fun init() {
         protocolHandler.inboundMessages.onEach {
             when (it) {
                 is AppMessage.AppMessagePush -> {
                     val appMessageData = it.appMessageData()
-                    getReceivedMessagesChannel(it.uuid.get()).trySend(appMessageData)
-                    // BRIDGE-TAP: appmsg-received
-                    runCatching {
-                        io.rebble.libpebblecommon.automation.AutomationAppMessageHook.onReceived
-                            ?.invoke(appMessageData.uuid.toString(), appMessageData.data)
+                    val address = identifier.asString
+                    val uuid = appMessageData.uuid.toString()
+                    val owns = appMessageData.uuid in taskerEligible.value &&
+                        AutomationAppMessageHook.hasAuthorizedOwnership(address, uuid)
+                    val accepted = AutomationAppMessageHook.deliver(address, uuid, appMessageData.transactionId.toInt(), appMessageData.data)
+                    if (owns) {
+                        // Owned messages never enter a native/PKJS queue, so fallback companions
+                        // cannot NACK or ACK them a second time. Revocation is rechecked at ACK.
+                        val ack = accepted && AutomationAppMessageHook.hasAuthorizedOwnership(address, uuid)
+                        sendAppMessageResult(if (ack) AppMessageResult.ACK(appMessageData.transactionId) else AppMessageResult.NACK(appMessageData.transactionId))
+                    } else {
+                        getReceivedMessagesChannel(it.uuid.get()).trySend(appMessageData)
                     }
                 }
             }
@@ -55,13 +74,13 @@ class AppMessageService(
     /**
      * Send an AppMessage
      */
-    override suspend fun sendAppMessage(appMessageData: AppMessageData): AppMessageResult {
+    override suspend fun sendAppMessage(appMessageData: AppMessageData): AppMessageResult = coroutineScope {
         val appMessage = AppMessage.AppMessagePush(
             transactionId = appMessageData.transactionId,
             uuid = appMessageData.uuid,
             tuples = appMessageData.data.toAppMessageTuples()
         )
-        val result = scope.async {
+        val result = async(start = CoroutineStart.UNDISPATCHED) {
             withTimeoutOrNull(APPMESSAGE_TIMEOUT) {
                 protocolHandler.inboundMessages.first {
                     it is AppMessage && (it is AppMessage.AppMessageACK || it is AppMessage.AppMessageNACK)
@@ -72,11 +91,15 @@ class AppMessageService(
                 AppMessage.AppMessageNACK(appMessageData.transactionId)
             }
         }
-        protocolHandler.send(appMessage)
-        return when (val msg = result.await()) {
-            is AppMessage.AppMessageACK -> msg.appMessageResult()
-            is AppMessage.AppMessageNACK -> msg.appMessageResult()
-            else -> throw IllegalStateException("Unexpected result: $result")
+        try {
+            protocolHandler.send(appMessage)
+            when (val msg = result.await()) {
+                is AppMessage.AppMessageACK -> msg.appMessageResult()
+                is AppMessage.AppMessageNACK -> msg.appMessageResult()
+                else -> throw IllegalStateException("Unexpected result: $result")
+            }
+        } finally {
+            result.cancel()
         }
     }
 

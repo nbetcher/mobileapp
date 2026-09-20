@@ -15,7 +15,9 @@ object BridgeJson {
 
 /** Error codes (HLDD-002 §6.3). */
 object ErrorCode {
+    const val ACCESS_DENIED = "ACCESS_DENIED"
     const val NOT_AUTHORIZED = "NOT_AUTHORIZED"
+    const val COMMAND_NOT_AUTHORIZED = "COMMAND_NOT_AUTHORIZED"
     const val CONSENT_PENDING = "CONSENT_PENDING"
     const val CERT_MISMATCH = "CERT_MISMATCH"
     const val CATEGORY_DISABLED = "CATEGORY_DISABLED"
@@ -23,6 +25,7 @@ object ErrorCode {
     const val UNSUPPORTED_VERSION = "UNSUPPORTED_VERSION"
     const val INVALID_ARGS = "INVALID_ARGS"
     const val INTERNAL = "INTERNAL"
+    const val TIMEOUT = "TIMEOUT"
 
     /** A command was rejected by per-type rate limiting (HLDD-002 §6, PLAN §5.5). */
     const val RATE_LIMITED = "RATE_LIMITED"
@@ -50,6 +53,8 @@ data class BridgeHello(
     val latestSeq: Long,
     val appVersion: String,
     val clientToken: String,
+    /** Changes on every consent/privacy revision, even if settings are later restored. */
+    val authorityId: String? = null,
 )
 
 @Serializable
@@ -108,10 +113,17 @@ data class EventBatch(
     val bootId: String,
     val events: List<EventEnvelope>,
     val more: Boolean = false,
+    val cursor: Long? = null,
+    val historyLost: Boolean = false,
+    val subscriptionToken: String? = null,
 )
 
 @Serializable
-data class StateData(val watches: List<WatchRef>)
+data class StateData(
+    val watches: List<WatchRef>,
+    val bluetoothEnabled: Boolean? = null,
+    val capabilities: List<String> = emptyList(),
+)
 
 /** State query response (HLDD-002 §4.6). */
 @Serializable

@@ -3,16 +3,22 @@ package coredevices.coreapp.automation.events
 import io.rebble.libpebblecommon.connection.LibPebble
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.buffer
-import kotlinx.coroutines.flow.drop
+import io.rebble.libpebblecommon.calls.Call
+import io.rebble.libpebblecommon.connection.UserFacingError
+import io.rebble.libpebblecommon.connection.bt.BluetoothState
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.Instant
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 /**
- * Facade-level event collectors (HLDD-001 §9, PLAN §6.2) — sources that live on [LibPebble] itself
+ * Facade-level event collectors (HLDD-001 Â§9, PLAN Â§6.2) â€” sources that live on [LibPebble] itself
  * rather than on a single connection:
  *   - currentCall        -> calls.state
  *   - userFacingErrors   -> system.error
  *   - healthDataUpdated  -> health.updated
- *   - activeWatchface    -> apps.run_state (kind=watchface)
+ *   - bluetoothEnabled  -> bt.state
  */
 class SystemEventCollector(
     private val libPebble: LibPebble,
@@ -28,15 +34,20 @@ class SystemEventCollector(
                         category = "calls",
                         type = "calls.state",
                         data = mapOf(
-                            "state" to (call::class.simpleName ?: "Call"),
+                            "state" to when (call) {
+                                is Call.RingingCall -> "ringing"
+                                is Call.DialingCall -> "dialing"
+                                is Call.ActiveCall -> "active"
+                                is Call.HoldingCall -> "holding"
+                            },
                             "number" to call.contactNumber,
-                            "name" to (call.contactName ?: ""),
+                            "caller_name" to (call.contactName ?: ""),
                         ),
                     )
                 } else if (hadCall) {
                     // Call ended: emit the closing transition so a 'while in call' automation can reset.
                     hadCall = false
-                    dispatcher.emit(category = "calls", type = "calls.state", data = mapOf("state" to "Ended"))
+                    dispatcher.emit(category = "calls", type = "calls.state", data = mapOf("state" to "ended"))
                 }
             }
         }
@@ -46,7 +57,13 @@ class SystemEventCollector(
                     category = "system",
                     type = "system.error",
                     data = mapOf(
-                        "type" to (error::class.simpleName ?: "Error"),
+                        "error_type" to when (error) {
+                            is UserFacingError.FailedToDownloadPbw -> "failed_to_download_pbw"
+                            is UserFacingError.FailedToRemovePbwFromLocker -> "failed_to_remove_pbw"
+                            is UserFacingError.FailedToSideloadApp -> "failed_to_sideload_app"
+                            is UserFacingError.FailedToScan -> "failed_to_scan"
+                            is UserFacingError.MissingCompanionApp -> "missing_companion_app"
+                        },
                         "message" to error.message,
                     ),
                 )
@@ -54,23 +71,28 @@ class SystemEventCollector(
         }
         scope.launch {
             libPebble.healthDataUpdated.collect {
-                dispatcher.emit(category = "health", type = "health.updated")
+                // LibPebble health storage is a global aggregate, not a per-watch measurement.
+                val data = buildMap {
+                    try {
+                        val now = Instant.now()
+                        val start = LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toEpochSecond()
+                        libPebble.getTotalHealthData(start, now.epochSecond)?.steps?.let { put("steps_today", it.toString()) }
+                        libPebble.getLatestHeartRateReading()?.let {
+                            put("latest_hr", it.bpm.toString())
+                            put("latest_hr_timestamp", it.timestampEpochSec.toString())
+                        }
+                    } catch (e: CancellationException) { throw e }
+                    catch (_: Exception) { put("available", "false") }
+                }
+                dispatcher.emit(category = "health", type = "health.updated", data = data)
             }
         }
         scope.launch {
-            libPebble.activeWatchface.drop(1).collect { face ->
-                if (face != null) {
-                    dispatcher.emit(
-                        category = "apps",
-                        type = "apps.run_state",
-                        data = mapOf(
-                            "kind" to "watchface",
-                            "uuid" to face.properties.id.toString(),
-                            "name" to face.properties.title,
-                        ),
-                    )
-                }
+            libPebble.bluetoothEnabled.collect { state ->
+                dispatcher.emit("system", "bt.state", data = mapOf("enabled" to (state == BluetoothState.Enabled).toString()))
             }
         }
+        // Actual app/watchface transitions come from per-watch runningApp. activeWatchface is a
+        // phone-side selection and must not impersonate an observed launch on every watch.
     }
 }

@@ -41,6 +41,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.runCurrent
+import kotlin.test.assertTrue
 import kotlin.time.Clock
 import kotlin.time.Instant
 import kotlinx.io.files.Path
@@ -128,10 +132,14 @@ class WatchManagerTest {
             _state.value = ConnectingPebbleState.Negotiating(identifier, null)
             delay(1.milliseconds)
             if (connectSuccess) {
+                val fake = FakeConnectedDevice(identifier, FirmwareUpdateCheckState(false, null),
+                    FirmwareUpdater.FirmwareUpdateStatus.NotInProgress.Idle(), name, null,
+                    connectionFailureInfo = null, serial = "STABLE-SERIAL")
                 _state.value = ConnectingPebbleState.Connected.ConnectedNotInPrf(
                     identifier = identifier,
-                    watchInfo = TODO(),
-                    services = TODO(),
+                    watchInfo = fake.watchInfo,
+                    services = ConnectedPebble.Services(fake, fake, firmwareUpdater, fake, fake,
+                        fake, fake, fake, fake, fake, fake, fake, fake, fake, fake),
                     reversePpogVersion = null,
                 )
             } else {
@@ -334,6 +342,38 @@ class WatchManagerTest {
             watchManager.watches.first { totalConnections >= i && it.any { it is ConnectingPebbleDevice } }
         }
         assertFalse(exceededMax)
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun synchronousTransitionObserverSeesPublishedSnapshot() = runTest(timeout = 5.seconds) {
+        connectSuccess = true
+        val manager = create(backgroundScope)
+        val observed = mutableListOf<PebbleConnectionEvent>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            manager.connectionEvents.collect { event ->
+                observed += event
+                when (event) {
+                    is PebbleConnectionEvent.PebbleConnectedEvent -> {
+                        assertTrue(manager.watches.value.any { it is CommonConnectedDevice && it.serial == "STABLE-SERIAL" })
+                    }
+                    is PebbleConnectionEvent.PebbleDisconnectedEvent -> {
+                        assertFalse(manager.watches.value.any { it is CommonConnectedDevice })
+                    }
+                }
+            }
+        }
+        manager.init()
+        runCurrent()
+        manager.addScanResult(PebbleScanResult(identifier, name, 0, null))
+        manager.requestConnection(identifier)
+        manager.watches.first { it.any { it is CommonConnectedDevice } }
+        runCurrent()
+        manager.requestDisconnection(identifier)
+        manager.watches.first { it.none { it is CommonConnectedDevice } }
+        runCurrent()
+        assertEquals(1, observed.count { it is PebbleConnectionEvent.PebbleConnectedEvent })
+        assertEquals(1, observed.count { it is PebbleConnectionEvent.PebbleDisconnectedEvent })
     }
 
     private fun seededWatch(lastConnected: MillisecondInstant?) = KnownWatchItem(

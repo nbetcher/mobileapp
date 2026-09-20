@@ -356,7 +356,8 @@ class WatchManager(
                     logger.d { "combine: watches=$watches / active=$active / btstate=$btState / activeConnections=$activeConnections" }
                 }
                 // Update for active connection state
-                watches.values.mapNotNull { device ->
+                val transitions = mutableListOf<PebbleConnectionEvent>()
+                val snapshot = watches.values.mapNotNull { device ->
                     val identifier = device.identifier
                     val states = CurrentAndPreviousState(
                         previousState = previousActive[identifier],
@@ -368,6 +369,9 @@ class WatchManager(
                     persistIfNeeded(device)
                     // Removed forgotten device once it is disconnected
                     if (!hasConnectionAttempt && device.forget) {
+                        if (states.previousState?.connectingPebbleState is ConnectingPebbleState.Connected) {
+                            transitions.add(PebbleConnectionEvent.PebbleDisconnectedEvent(identifier))
+                        }
                         logger.d("removing ${device.identifier} from allWatches")
                         allWatches.update { it.minus(device.identifier) }
                         blobDbDatabaseManager.deleteSyncRecordsForStaleDevices()
@@ -437,7 +441,7 @@ class WatchManager(
                         if (connectedDevice == null) {
                             logger.w { "$pebbleDevice isn't a CommonConnectedDevice" }
                         } else {
-                            _connectionEvents.emit(PebbleConnectionEvent.PebbleConnectedEvent(connectedDevice))
+                            transitions.add(PebbleConnectionEvent.PebbleConnectedEvent(connectedDevice))
                         }
                     }
                     // Watch just disconnected
@@ -450,13 +454,16 @@ class WatchManager(
                             }
                         }
 
-                        _connectionEvents.emit(PebbleConnectionEvent.PebbleDisconnectedEvent(identifier))
+                        transitions.add(PebbleConnectionEvent.PebbleDisconnectedEvent(identifier))
                     }
 
                     pebbleDevice
                 }
-            }.collect {
-                _watches.value = it.also { logger.d("watches: ${it.joinToString(separator = "\n", prefix = "\n")}") }
+                snapshot to transitions
+            }.collect { (snapshot, transitions) ->
+                // A synchronous observer of a transition must see the corresponding new state.
+                _watches.value = snapshot
+                transitions.forEach { _connectionEvents.emit(it) }
             }
         }
     }

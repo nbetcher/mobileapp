@@ -20,8 +20,7 @@ class EventDispatcherTest {
         repeat(EventDispatcher.RING + 10) { d.emit("c", "t") }
         val all = d.since(0)
         assertEquals(EventDispatcher.RING, all.size)
-        // 60 emitted, ring holds 50 → oldest kept is seq 11
         assertEquals(11L, all.first().seq)
-        assertEquals(60L, all.last().seq)
+        assertEquals((EventDispatcher.RING + 10).toLong(), all.last().seq)
     }
 }
