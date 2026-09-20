@@ -3,7 +3,7 @@
     "1.11.0": 1,
     "1.11.0.3": 2,
     "1.12.0.1": 1,
-    "1.13.0.2": 3,
+    "1.13.0.2": 4,
     "1.8.0.6": 7,
     "1.9.1.3": 1
   },
@@ -31,7 +31,12 @@
   "last_synced_cutoff": "73e439f55c51c8779467ce09576793976c9e9aed",
   "last_synced_tasker": "4547e6d25a35184f3c2524881fa9a64a4e9e44ee",
   "last_synced_version": "1.13.0.2",
-  "run_url": "https://github.com/nbetcher/mobileapp/actions/runs/35522152598",
-  "status": "merge-failed",
-  "updated_at": "2026-09-20T16:16:00Z"
+  "previous": {
+    "last_synced_cutoff": "73e439f55c51c8779467ce09576793976c9e9aed",
+    "last_synced_tasker": "4547e6d25a35184f3c2524881fa9a64a4e9e44ee",
+    "last_synced_version": "1.13.0.2"
+  },
+  "run_url": "https://github.com/nbetcher/mobileapp/actions/runs/35522248669",
+  "status": "merging",
+  "updated_at": "2026-09-20T16:17:50Z"
 }
