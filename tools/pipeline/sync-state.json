@@ -7,9 +7,7 @@
     "1.8.0.6": 7,
     "1.9.1.3": 1
   },
-  "build_strikes": [
-    "1.13.0.2"
-  ],
+  "build_strikes": [],
   "cutoff": {
     "branch_head_position": 2280,
     "changelog_version": "1.13.0.2",
