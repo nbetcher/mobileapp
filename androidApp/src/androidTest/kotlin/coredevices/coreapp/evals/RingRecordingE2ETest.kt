@@ -585,7 +585,7 @@ class RingRecordingE2ETest {
             }
         }
         single {
-            CactusTranscriptionService(get(), get<CactusModelPathProvider>(), get(), NoOpInferenceBoost())
+            CactusTranscriptionService(get(), get<CactusModelPathProvider>(), get(), NoOpInferenceBoost(), get())
         }
         single {
             HybridTranscriptionService(get(), get(), get(), get(), get(), PlatformSpeechRecognizer())
@@ -672,6 +672,8 @@ class RingRecordingE2ETest {
                     gesture: coredevices.ring.service.button.RingGesture,
                     url: String,
                     headers: Map<String, String>,
+                    signRequests: Boolean,
+                    signingSecret: String?,
                 ) = coredevices.ring.external.indexwebhook.IndexWebhookRunResult(
                     ok = true, status = "200 OK", detail = "test event", byteSize = 0, durationMs = 0,
                 )
@@ -712,6 +714,7 @@ private class E2EPreferences : Preferences {
     override val lastWipedRing: StateFlow<String?> = MutableStateFlow(null)
     override val lastBackupCount: StateFlow<Int?> = MutableStateFlow(null)
     override val platformSttDefaulted: Boolean = false
+    override val usePendingIntentScan: StateFlow<Boolean> = MutableStateFlow(false)
 
     override suspend fun setLlmMode(mode: LlmMode) {}
     override suspend fun setUseCactusTranscription(useCactus: Boolean) {}
@@ -735,6 +738,8 @@ private class E2EPreferences : Preferences {
     override fun setLastWipedRing(id: String?) {}
     override fun setLastBackupCount(count: Int?) {}
     override fun setPlatformSttDefaulted() {}
+    override fun setUsePendingIntentScan(enabled: Boolean) {}
+
     override val defaultCaptureType: StateFlow<DefaultCaptureType> =
         MutableStateFlow(DefaultCaptureType.Note)
     override fun setDefaultCaptureType(type: DefaultCaptureType) {}

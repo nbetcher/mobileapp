@@ -203,6 +203,7 @@ private fun fakePebbleModule(appContext: AppContext) = module {
         override suspend fun updateLastConnectedWatch(serial: String) {}
         override suspend fun updateRingLifetimeCollectionCount(serial: String, count: Int) {}
         override suspend fun updateRingBatteryVoltage(serial: String, voltageMilliV: Int) {}
+        override suspend fun signOut() {}
 
         override fun init() {}
     }
@@ -402,6 +403,14 @@ private fun fakePebbleModule(appContext: AppContext) = module {
 
         override fun hasApprovedDevice(identifier: IndexIdentifier): Boolean {
             return true
+        }
+
+        override fun canRemoveBond(identifier: IndexIdentifier): Boolean {
+            return false
+        }
+
+        override fun removeBond(identifier: IndexIdentifier): Boolean {
+            return false
         }
 
         override fun cdmPreviouslyCrashed(): Boolean {
