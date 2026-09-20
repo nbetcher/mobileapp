@@ -57,6 +57,7 @@ class AppMessageService(
                     val uuid = appMessageData.uuid.toString()
                     val owns = appMessageData.uuid in taskerEligible.value &&
                         AutomationAppMessageHook.hasAuthorizedOwnership(address, uuid)
+                    // BRIDGE-TAP: appmsg-received
                     val accepted = AutomationAppMessageHook.deliver(address, uuid, appMessageData.transactionId.toInt(), appMessageData.data)
                     if (owns) {
                         // Owned messages never enter a native/PKJS queue, so fallback companions

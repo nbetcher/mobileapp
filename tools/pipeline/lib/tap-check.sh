@@ -49,7 +49,7 @@ fi
 TAPS="
 notif-send|// BRIDGE-TAP: notif-send|AutomationNotificationHooks.onSent
 notif-action|// BRIDGE-TAP: notif-action|AutomationNotificationHooks.onAction
-appmsg-received|// BRIDGE-TAP: appmsg-received|AutomationAppMessageHook.onReceived
+appmsg-received|// BRIDGE-TAP: appmsg-received|AutomationAppMessageHook.deliver
 timeline-action|// BRIDGE-TAP: timeline-action|AutomationTimelineHook.onAction
 "
 
