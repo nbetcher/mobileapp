@@ -49,7 +49,7 @@ The plugin serializes both Tasker query entry paths through result handoff using
 
 ## Watch control, preferences and diagnostics
 
-New commands are additive and advertised as `command.<type>` only when this build can run them (`watch.pressButton` and `watch.swipe` stay unadvertised, and fail with `UNSUPPORTED_COMMAND`, until libpebble3 gains remote input; see `docs/libpebble3-handoff.md`). All accept the usual `watch` selector.
+New commands are additive and advertised as `command.<type>` only when this build can run them (`watch.pressButton` and `watch.swipe` stay unadvertised, and fail with `UNSUPPORTED_COMMAND`, until libpebble3 gains remote input). All accept the usual `watch` selector.
 
 | Command | Tier | Args | Result |
 |---|---|---|---|
