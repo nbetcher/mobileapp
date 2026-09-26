@@ -1,5 +1,6 @@
 package io.rebble.libpebblecommon.connection
 
+import io.rebble.libpebblecommon.automation.WatchPrefSupport
 import io.rebble.libpebblecommon.automation.TimeSyncResult
 import io.rebble.libpebblecommon.automation.AutomationWatchServices
 import io.rebble.libpebblecommon.automation.RemoteInput
@@ -121,7 +122,8 @@ sealed interface ConnectedPebbleDevice :
     ConnectedPebble.Screenshot,
     ConnectedPebble.Language,
     ConnectedPebble.Health,
-    RemoteInput
+    RemoteInput,
+    WatchPrefSupport
 
 /**
  * Put all specific functionality here, rather than directly in [ConnectedPebbleDevice].

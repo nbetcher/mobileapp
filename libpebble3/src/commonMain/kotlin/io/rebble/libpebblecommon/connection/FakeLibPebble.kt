@@ -1,5 +1,6 @@
 package io.rebble.libpebblecommon.connection
 
+import io.rebble.libpebblecommon.automation.WatchPrefSupport
 import io.rebble.libpebblecommon.automation.TimeSyncResult
 import io.rebble.libpebblecommon.automation.RemoteInputButton
 import io.rebble.libpebblecommon.automation.RemoteInput
@@ -635,6 +636,10 @@ class FakeConnectedDevice(
 
     override suspend fun swipe(direction: RemoteInputSwipeDirection, durationMs: Int) =
         RemoteInput.Unavailable.swipe(direction, durationMs)
+
+    override val acceptedWatchPrefs = WatchPrefSupport.Unavailable.acceptedWatchPrefs
+    override val rejectedWatchPrefs = WatchPrefSupport.Unavailable.rejectedWatchPrefs
+    override val watchPrefSyncOutcomes = WatchPrefSupport.Unavailable.watchPrefSyncOutcomes
 
     override suspend fun sendPPMessage(bytes: ByteArray) {}
 

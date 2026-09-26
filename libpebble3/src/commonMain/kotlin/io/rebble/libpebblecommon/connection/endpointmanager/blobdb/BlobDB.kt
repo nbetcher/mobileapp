@@ -1,5 +1,6 @@
 package io.rebble.libpebblecommon.connection.endpointmanager.blobdb
 
+import io.rebble.libpebblecommon.automation.WatchPrefSupportTracker
 import co.touchlab.kermit.Logger
 import com.russhwolf.settings.ExperimentalSettingsApi
 import com.russhwolf.settings.Settings
@@ -112,6 +113,7 @@ class BlobDB(
     private val notificationConfigFlow: NotificationConfigFlow,
     private val settings: Settings,
     private val libPebbleConfigFlow: LibPebbleConfigFlow,
+    private val prefSupport: WatchPrefSupportTracker,
 ) {
     protected val watchIdentifier: String = identifier.asString
 
@@ -227,6 +229,10 @@ class BlobDB(
                     logger.v { "write: $message" }
                     if (message.database == BlobDatabase.WatchPrefs && !deviceHasPreviouslySyncedSettings) {
                         markDeviceHasSyncedSettings()
+                    }
+                    // BRIDGE-TAP: watchpref-support
+                    if (message.database == BlobDatabase.WatchPrefs) {
+                        prefSupport.recordWatchWrite(message.key.toByteArray().decodeToString().trimEnd(NUL_CHAR))
                     }
                     val effectiveDatabase = effectiveDatabaseFor(message)
                     val dao = blobDatabases.get().find { it.databaseId() == effectiveDatabase }
@@ -371,6 +377,10 @@ class BlobDB(
         val bytes = command.serialize().asByteArray()
         val result = sendWithTimeout(command)
         logger.d("insert: result = ${result?.responseValue}")
+        // BRIDGE-TAP: watchpref-support
+        if (db.databaseId() == BlobDatabase.WatchPrefs) {
+            prefSupport.recordInsertResult(key.toByteArray().decodeToString().trimEnd(NUL_CHAR), result?.responseValue)
+        }
         when (result?.responseValue) {
             BlobResponse.BlobStatus.Success,
             // Stale = mark as synced (watch will never accept this record)

@@ -1,5 +1,6 @@
 package io.rebble.libpebblecommon.connection
 
+import io.rebble.libpebblecommon.automation.WatchPrefSupport
 import io.rebble.libpebblecommon.automation.RemoteInput
 import io.rebble.libpebblecommon.connection.bt.BluetoothState
 import io.rebble.libpebblecommon.connection.bt.ble.pebble.PebbleLeScanRecord
@@ -269,7 +270,8 @@ internal class RealConnectedPebbleDevice(
     ConnectedPebble.Screenshot by services.screenshot,
     ConnectedPebble.LanguageInstall by services.language,
     ConnectedPebble.Health by services.health,
-    RemoteInput by (services.automation?.remoteInput ?: RemoteInput.Unavailable) {
+    RemoteInput by (services.automation?.remoteInput ?: RemoteInput.Unavailable),
+    WatchPrefSupport by (services.automation?.prefSupport ?: WatchPrefSupport.Unavailable) {
 
     override fun toString(): String =
         "ConnectedPebbleDevice: $knownDevice $watchInfo batteryLevel=$batteryLevel firmwareUpdateState=$firmwareUpdateState firmwareUpdateAvailable=$firmwareUpdateAvailable runningApp=${services.appRunState.runningApp.value} reversePpogVersion=$reversePpogVersion"

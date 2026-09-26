@@ -1,5 +1,6 @@
 package io.rebble.libpebblecommon.di
 
+import io.rebble.libpebblecommon.automation.WatchPrefSupportTracker
 import io.rebble.libpebblecommon.automation.AutomationWatchServices
 import io.rebble.libpebblecommon.automation.RemoteInputService
 import co.touchlab.kermit.Logger
@@ -563,6 +564,7 @@ fun initKoin(
                     scopedOf(::HealthService)
                     // BRIDGE-TAP: automation-services
                     scopedOf(::RemoteInputService)
+                    scopedOf(::WatchPrefSupportTracker)
                     scopedOf(::AutomationWatchServices)
 
                     // Endpoint Managers

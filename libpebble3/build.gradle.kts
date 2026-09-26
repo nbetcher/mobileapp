@@ -149,6 +149,7 @@ kotlin {
 
         jvmTest.dependencies {
             implementation(libs.kotlin.test)
+            implementation(libs.settings.test)
             implementation(libs.kotlin.test.junit)
             implementation(libs.ktor.websockets)
             implementation(libs.ktor.cio)
