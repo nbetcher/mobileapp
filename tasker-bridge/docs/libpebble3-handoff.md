@@ -8,14 +8,16 @@
   - Prefer **new** files, and new members appended to existing interfaces, over reshaping upstream code.
   - Put fork-only glue under `io.rebble.libpebblecommon.automation` (the package that already holds `AutomationAppMessageHook`).
   - Mark each call site you add inside an upstream function with `// BRIDGE-TAP: <id>`, the fork's existing convention (see `services/appmessage/AppMessageService.kt:60`). The sync workflow is told to preserve those anchors.
-- Scope is **libpebble3 only**, plus switching one bridge adapter over to the new APIs (section 6). The Tasker bridge commands, events, tiers, rate limits and consent UI are already in `tasker-bridge/` and `composeApp/.../automation/`.
+- Scope is **libpebble3 only**, plus switching the bridge over to the new APIs (section 6) and writing the follow-up hand-off (section 8). The Tasker bridge commands, events, tiers, rate limits and consent UI are already in `tasker-bridge/` and `composeApp/.../automation/`.
 - **iOS: no work.** Automation is Android-only. Protocol code still goes in `commonMain`, because that is where libpebble3's protocol and services live and moving it would diverge from upstream. Add no iOS wiring, UI, or testing. `FakeLibPebble` and other test doubles need stubs so everything compiles.
 - Follow `CLAUDE.md`:
   - minimal comments;
   - no `init {}` blocks;
   - per-watch state goes in per-watch services;
   - unit tests for new logic (`libpebble3/src/jvmTest` already exists; run `./gradlew :libpebble3:jvmTest`).
-- Make one commit per numbered section below.
+- Make one commit per numbered section below (sections 1–7).
+- **Commit identity:** author and commit as `Nick Betcher <nick@nickbetcher.com>`. Set it in the repo's own config (`git config user.name` / `user.email`, not `--global`, which the environment may reset) and check `git log --format='%an <%ae> | %cn <%ce>'` before every push.
+- **No AI attribution anywhere:** no `Co-Authored-By` or session-link trailers in commit messages, no generated-by footers, no model names in code, comments, docs or PR text.
 
 ---
 
@@ -135,8 +137,77 @@ The bridge side is already built against a seam: `WatchControl` in
 | `prefSupport` | `UNSUPPORTED` without BlobDB v2, else `UNKNOWN` | also `UNSUPPORTED` if the key is in `rejectedWatchPrefs`, `SUPPORTED` if the watch has accepted it |
 | `writePrefAndAwait` | write, then `prefSupport` | subscribe to `watchPrefSyncOutcomes`, write, wait for this key's outcome; on timeout (e.g. an unchanged value that is never re-sent) fall back to `prefSupport` |
 
-Update `WatchControlCommandsTest` / `CommandActuationTest` only if a mapping changes. The bridge's
-contract (`tasker-bridge/README.md`) does not change.
+Two bridge changes outside the adapter, both in `WatchControlCommands.kt`:
+
+- **`checkFirmware` completion.** It currently decides a triggered check has finished by watching
+  `checkingForUpdates` go `true` then `false` on `libPebble.watches`. That flow is built with `combine`
+  and can drop the brief `true` state, so a check that fails or hits a cache within milliseconds
+  returns `status=pending` after 4.5 s. Record `checkedAt` before triggering and wait instead for
+  `firmwareUpdateAvailable` to carry a result with a later `checkedAt`, or an `UpdateCheckFailed`
+  (which leaves `checkedAt` unchanged, so also compare the result object).
+- **`lastSuccessfulCheck`.** The bridge now remembers per watch when `checkFirmware` saw a fresh
+  successful check, as a stopgap for the missing `checkedAt`. Once `firmwareCheckedAt` is real, remove
+  that map and use `control.firmwareCheckedAt(device)` alone in `installFirmware`.
+
+Update `WatchControlCommandsTest` / `CommandActuationTest` to cover the new mappings. The bridge's
+contract (`tasker-bridge/README.md`) does not change; if you find it has to, stop and record why in the
+follow-up hand-off (section 8) instead of changing the contract silently.
+
+## 7. Log dumps must not share a temp file
+
+`services/LogDumpService.kt`, `gatherLogs()`, writes every dump for a watch to the fixed path
+`getTempFilePath(appContext, "logs-${identifier.asString}")`. Two callers can run at once: the app's
+bug report (`PebbleAppDelegate.getWatchLogs()`, used by `BugReportProcessor`) and the bridge's
+`watch.gatherLogs` job, which copies the file out and then deletes it. Concurrent dumps interleave
+lines in the same file, and the bridge's delete can remove the file the bug report is about to attach.
+LogDump replies are not matched by cookie, so two dumps on one watch cannot safely overlap even with
+separate files.
+
+- Serialize `gatherLogs()` per watch with a `Mutex` held by the per-watch service.
+- Give each dump a unique file name (for example append a random UUID). Keep the file in the same temp
+  directory so existing cleanup still applies.
+- Mark the change with `// BRIDGE-TAP: logdump-serialized`.
+- Tests: two concurrent `gatherLogs()` calls produce two distinct paths and do not interleave.
+
+The bridge keeps its `dump.delete()`; with unique names it only deletes its own copy.
+
+## 8. After you push: write the follow-up hand-off
+
+Do this as the **last step, right after the libpebble3 work is committed and successfully pushed to
+GitHub**. Confirm the push landed (`git ls-remote origin <branch>` matches `HEAD`). If the push fails,
+stop, report the failure, and do not write the follow-up yet.
+
+Write `tasker-bridge/docs/followup-after-libpebble3.md`, commit it with the same identity rules, push
+it, and print its full contents in your final reply. Write it as a self-contained prompt for a fresh
+AI session. It takes exactly one of two forms:
+
+**A. Changes needed in this repository.** Use this if anything you know of still needs doing or
+deciding in `nbetcher/mobileapp` before the Tasker plugin can build on it. Examples: a mapping in
+section 6 you could not finish; a libpebble3 API that ended up different from this hand-off; a
+bridge contract change; a failing or flaky test; a firmware behaviour you observed that contradicts
+section 2; anything you deferred. For each item give the file paths, what is wrong or missing, why, and
+what "done" looks like. List any user decisions needed separately, as questions. End with: "When this
+is done, write the Tasker plugin hand-off described in form B."
+
+**B. Proceed to the Tasker plugin.** Use this only if nothing is left in this repository. The file is
+then the prompt for implementing the features in the **Tasker plugin app**, which is a separate
+repository that will not contain this code. So:
+
+- Start with one line saying the host-side work is complete and verified, with the commit hash.
+- Inline, verbatim, the "Watch control, preferences and diagnostics" section of `tasker-bridge/README.md`
+  plus any README sections it depends on (command policy, jobs, events). Do not only link to them.
+- List the new capability strings (`command.watch.*`, `commands.extremely_dangerous`,
+  `events.owner_targeted`), the new error codes (`PREF_UNSUPPORTED`, `FIRMWARE_UPDATE_UNAVAILABLE`,
+  `FIRMWARE_CHECK_STALE`, `WATCH_BUSY`, plus `CATEGORY_DISABLED` for jobs) and the new events
+  (`watch.pref`, `fw.available`, `job.done`).
+- Spell out what the plugin must build: a Tasker action per command; the preference picker fed by
+  `watch.listPrefs` (labels, types, options, support status), used for both a "Get Preference" action and
+  a "Preference Changed" event filter; a "Firmware Update Available" event; handling `job_id` →
+  `job.done` for screenshots and logs, including reading the `content://` URI before it expires after
+  one hour; and treating an unknown tier string such as `extremely_dangerous` as at least `dangerous`.
+- Say that commands missing from the host's advertised `command.<type>` capabilities must be hidden or
+  shown as unavailable, not attempted.
+- Carry over the commit identity and no-attribution rules above.
 
 ## Already done on the bridge / app side
 
@@ -148,7 +219,9 @@ contract (`tasker-bridge/README.md`) does not change.
 
 ## Done when
 
-- All six sections are committed.
+- All seven sections are committed and pushed.
 - `./gradlew :libpebble3:jvmTest` passes.
 - `./gradlew :androidApp:assembleDebug` builds.
+- `./gradlew :tasker-bridge:testDebugUnitTest` passes.
+- The follow-up hand-off from section 8 is written, committed and pushed.
 - The upstream-owned diff is limited to: new members on existing interfaces, the endpoint enum entry, the packet registrations, the `FirmwareUpdateCheckState` field, and the `BRIDGE-TAP` call site in `BlobDB.kt`.
