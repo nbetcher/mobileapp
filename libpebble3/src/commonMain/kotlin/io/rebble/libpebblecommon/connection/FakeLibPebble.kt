@@ -624,6 +624,8 @@ class FakeConnectedDevice(
     override fun createCoreDump() {}
     override fun factoryReset() {}
 
+    override fun reset() {}
+
     override suspend fun sendPPMessage(bytes: ByteArray) {}
 
     override suspend fun sendPPMessage(ppMessage: PebblePacket) {}

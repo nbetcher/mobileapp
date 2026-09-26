@@ -163,6 +163,12 @@ class SystemService(
         }
     }
 
+    override fun reset() {
+        scope.launch {
+            protocolHandler.send(ResetMessage.Reset)
+        }
+    }
+
     override fun resetIntoPrf() {
         scope.launch {
             protocolHandler.send(ResetMessage.ResetIntoPrf)
