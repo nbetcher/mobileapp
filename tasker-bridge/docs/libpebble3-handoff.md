@@ -224,4 +224,4 @@ repository that will not contain this code. So:
 - `./gradlew :androidApp:assembleDebug` builds.
 - `./gradlew :tasker-bridge:testDebugUnitTest` passes.
 - The follow-up hand-off from section 8 is written, committed and pushed.
-- The upstream-owned diff is limited to: new members on existing interfaces, the endpoint enum entry, the packet registrations, the `FirmwareUpdateCheckState` field, and the `BRIDGE-TAP` call site in `BlobDB.kt`.
+- The upstream-owned diff is limited to: new members on existing interfaces, the endpoint enum entry, the packet registrations, the `FirmwareUpdateCheckState` field, and the `BRIDGE-TAP` call sites in `BlobDB.kt` and `LogDumpService.kt`.
