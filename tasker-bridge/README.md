@@ -46,3 +46,30 @@ Copied profile IDs coalesce only identical configurations. The configuration edi
 The `events.paged` capability limits serialized events to 40 Ki UTF-16 code units and batches to 96 Ki units including envelope headroom (approximately 192 KiB for the Parcel string). Oversized single events are rejected before journal acceptance/ACK. Replay cursors advance only through scanned events, and listeners immediately drain `more=true` pages. `events.registration_ack_only` permits a proof query at `Long.MAX_VALUE` to return registration identity and the current cursor without replaying the backlog. These are conservative per-message bounds, not a guarantee against exhaustion of Android's shared Binder buffer by unrelated concurrent calls.
 
 The plugin serializes both Tasker query entry paths through result handoff using the pinned SDK 0.4.10 evaluator. This fixes plugin-boundary overtaking; it cannot guarantee the installed host's task scheduling or acknowledged/exactly-once task execution. Passing unit tests are not a device qualification.
+
+## Watch control, preferences and diagnostics
+
+New commands are additive and advertised as `command.<type>` only when this build can run them (`watch.pressButton` and `watch.swipe` stay unadvertised until libpebble3 gains remote input; see `docs/libpebble3-handoff.md`). All accept the usual `watch` selector.
+
+| Command | Tier | Args | Result |
+|---|---|---|---|
+| `watch.listPrefs` | normal | — | `prefs`: JSON array of `{key,label,description?,type,value,default,support,options?,min?,max?,unit?}`; `count` |
+| `watch.getPref` | normal | `pref_key` | flat `pref_key,label,description?,type,value,default,support,options?,min?,max?,unit?` |
+| `watch.stopApp` | normal | `uuid` (default: running app) | `uuid` |
+| `watch.syncTime` | normal | — | `verified`, `skew_s?` |
+| `watch.checkFirmware` | normal | `force` | `status` = `available`\|`none`\|`failed`\|`pending`, `version?` |
+| `watch.screenshot` | sensitive | — | `job_id` |
+| `watch.reboot` | dangerous | — | `rebooting` |
+| `watch.pressButton` | dangerous | `button` (back/up/select/down), `presses` 1-255 (1), `hold_ms` 0-65535 (50), `gap_ms` 0-65535 (100) | `accepted` |
+| `watch.swipe` | dangerous | `direction` (up/down/left/right), `duration_ms` 1-300 (150) | `accepted` |
+| `watch.installFirmware` | dangerous | `version` (optional guard) | `version`, `started` |
+| `watch.gatherLogs` | extremely dangerous | — | `job_id` |
+| `watch.factoryReset` | extremely dangerous | `confirm_serial` (must equal the target serial) | `factory_reset=started` |
+
+- **Preferences.** Labels are the app's own English setting names. `support` is `supported`, `unsupported` (the watch rejected the key, or cannot sync settings at all) or `unknown` (not yet written to this watch). `watch.getPref` returns `PREF_UNSUPPORTED` for an unsupported key. `watch.setPref` stays global; with exactly one connected watch it refuses a key that watch does not support and waits up to 3 s for the watch's answer, returned as `watch_status`. Values and options use the `watch.setPref` wire form, so a listed option can be passed back unchanged. Debug settings are not listed.
+- **Cooldowns** apply per watch across all clients and return `RATE_LIMITED` with the remaining seconds: reboot 60 s; time sync 30 min after a verified sync, otherwise 30 s. Until libpebble3 can read the watch clock back, every sync is `verified=false`.
+- **Remote input** is acknowledged when the watch admits the sequence, not when it finishes. `WATCH_BUSY` means another injected sequence is still running. A timed long press (`hold_ms`) is released by the watch itself; holding a button indefinitely is deliberately not offered.
+- **Firmware install** refuses with `FIRMWARE_UPDATE_UNAVAILABLE` when a check within the last 24 h found nothing, and `FIRMWARE_CHECK_STALE` when no successful check is known within 24 h. Until libpebble3 records check times, every refusal is `FIRMWARE_CHECK_STALE`. `WATCH_BUSY` means an update is already running.
+- **Jobs.** Screenshots and log dumps outlast the IPC deadline. The command returns a `job_id`; the result arrives as a `system`/`job.done` event with `job_id`, `command`, `status` (`ok`/`failed`), `error?`, and on success `uri`, `mime` and (screenshots) `width`/`height`. The event carries `owner` and reaches only that package (`events.owner_targeted`), so the client needs the `system` category. The `content://` URI is readable only by the requesting package and is deleted after one hour.
+- **Events.** `system`/`watch.pref` (`pref_key`, `label`, `value`, `previous?`) fires on any preference change, including changes made on the watch; preferences are phone-global, so it has no watch. `system`/`fw.available` (`version`, `current`, `can_downgrade`, `notes` ≤ 2000 chars) fires once per watch and offered version.
+- **Extremely dangerous tier** (`extremely_dangerous`, `commands.extremely_dangerous`). Granting it shows a one-time, per-client warning whose Accept button unlocks after 10 s of the dialog being in focus. Acceptance is kept for that package and signing certificate until the client is revoked. The app-wide dangerous-commands toggle must also be on. A grant without a recorded acceptance acts as `dangerous`. `BridgeHello.grants.tier` can now read `extremely_dangerous`; plugins that do not know it should treat it as `dangerous`.

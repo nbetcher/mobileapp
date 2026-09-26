@@ -33,7 +33,7 @@ class CommandExecutorTest {
     @Test fun everyCatalogCommandChecksEveryGrantAndDangerousToggle() = runTest {
         for ((type, required) in CommandCatalog.tiers) for (grant in CommandTier.entries) for (dangerous in listOf(false, true)) {
             val handler = FakeHandler()
-            val allowed = grant.rank >= required.rank && (required != CommandTier.DANGEROUS || dangerous)
+            val allowed = grant.rank >= required.rank && (required.rank < CommandTier.DANGEROUS.rank || dangerous)
             val result = decode(CommandExecutor(handler).execute("client", cmd(type, "request"), grant, dangerous))
             assertEquals(allowed, result.ok, "$type $grant $dangerous")
             assertEquals(if (allowed) 1 else 0, handler.calls)

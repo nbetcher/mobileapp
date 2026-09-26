@@ -38,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import coredevices.coreapp.automation.command.CommandTier
 import coredevices.coreapp.automation.trust.ConsentController
 import org.koin.android.ext.android.inject
 import theme.AppTheme
@@ -71,7 +72,12 @@ class ConsentActivity : ComponentActivity() {
 private val DEFAULT_GRANT = setOf("connectivity", "apps", "media")
 
 /** Command tiers the user can grant a client at approval (value -> label). Events are not tier-gated. */
-private val TIERS = listOf("normal" to "Normal", "sensitive" to "Sensitive", "dangerous" to "Dangerous")
+private val TIERS = listOf(
+    "normal" to "Normal",
+    "sensitive" to "Sensitive",
+    "dangerous" to "Dangerous",
+    CommandTier.GRANT_EXTREMELY_DANGEROUS to "Extreme",
+)
 
 private fun categoryLabel(id: String): String = when (id) {
     AutomationSettings.CATEGORY_CONNECTIVITY -> "Connectivity (connect, battery)"
@@ -176,8 +182,8 @@ private fun ConsentScreen(consent: ConsentController, settings: AutomationSettin
                     Text("Allow dangerous commands")
                     Text(
                         "Lets dangerous-tier clients run destructive actions (e.g. toggling the " +
-                            "developer connection). Off by default; also requires granting a client the " +
-                            "dangerous tier below.",
+                            "developer connection, rebooting the watch). Off by default; also requires granting " +
+                            "a client the dangerous or extreme tier below.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
@@ -208,17 +214,13 @@ private fun ConsentScreen(consent: ConsentController, settings: AutomationSettin
                         Text("Command tier", style = MaterialTheme.typography.labelMedium)
                         Spacer(Modifier.height(4.dp))
                         var tier by remember(p.packageName, p.certSha256Hex) { mutableStateOf("normal") }
+                        var extremeAccepted by remember(p.packageName, p.certSha256Hex) { mutableStateOf(false) }
                         var grant by remember(p.packageName, p.certSha256Hex) { mutableStateOf(DEFAULT_GRANT) }
                         ClientCategoryChoices(grant) { grant = it }
                         if (!master) Text("Approving will also enable the automation bridge.")
-                        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                            TIERS.forEachIndexed { index, pair ->
-                                SegmentedButton(
-                                    selected = tier == pair.first,
-                                    onClick = { tier = pair.first },
-                                    shape = SegmentedButtonDefaults.itemShape(index = index, count = TIERS.size),
-                                ) { Text(pair.second) }
-                            }
+                        TierChoice(tier, extremeAccepted) { selected, accepted ->
+                            tier = selected
+                            extremeAccepted = extremeAccepted || accepted
                         }
                         Spacer(Modifier.height(12.dp))
                         // Approve / Deny carry EQUAL visual weight (both outlined) on purpose: this is a
@@ -226,7 +228,7 @@ private fun ConsentScreen(consent: ConsentController, settings: AutomationSettin
                         // read as "already approved" (mirrors the platform runtime-permission dialog).
                         Row {
                             OutlinedButton(onClick = {
-                                if (consent.approve(p.packageName, p.packageName, p.certSha256Hex, grant, tier)) {
+                                if (consent.approve(p.packageName, p.packageName, p.certSha256Hex, grant, tier, extremeAccepted)) {
                                     approvalError = null
                                     if (!master) consent.setMasterEnabled(true)
                                 } else approvalError = "The installed app changed or is unavailable. Review its current identity before approving."
@@ -249,15 +251,14 @@ private fun ConsentScreen(consent: ConsentController, settings: AutomationSettin
                         Spacer(Modifier.height(8.dp))
                         var grant by remember(c) { mutableStateOf(c.categories) }
                         var tier by remember(c) { mutableStateOf(c.tier) }
+                        var extremeAccepted by remember(c) { mutableStateOf(c.extremeDisclaimerAcceptedAtMs != null) }
                         ClientCategoryChoices(grant) { grant = it }
-                        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                            TIERS.forEachIndexed { index, pair ->
-                                SegmentedButton(selected = tier == pair.first, onClick = { tier = pair.first },
-                                    shape = SegmentedButtonDefaults.itemShape(index = index, count = TIERS.size)) { Text(pair.second) }
-                            }
+                        TierChoice(tier, extremeAccepted) { selected, accepted ->
+                            tier = selected
+                            extremeAccepted = extremeAccepted || accepted
                         }
                         OutlinedButton(onClick = {
-                            if (!consent.approve(c.packageName, c.label, c.certSha256, grant, tier))
+                            if (!consent.approve(c.packageName, c.label, c.certSha256, grant, tier, extremeAccepted))
                                 approvalError = "The installed app changed. Review its current identity."
                         }) { Text("Save access") }
                         OutlinedButton(onClick = { consent.revoke(c.packageName) }) { Text("Revoke") }
@@ -276,6 +277,43 @@ private fun ConsentScreen(consent: ConsentController, settings: AutomationSettin
             }
             Spacer(Modifier.height(24.dp))
         }
+    }
+}
+
+/**
+ * Command-tier selector. Picking the extreme tier for a client that has not accepted the disclaimer
+ * shows [ExtremeDisclaimerDialog] first; cancelling leaves the previous tier selected.
+ */
+@Composable
+private fun TierChoice(tier: String, extremeAccepted: Boolean, onChange: (tier: String, acceptedNow: Boolean) -> Unit) {
+    var confirming by remember { mutableStateOf(false) }
+    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+        TIERS.forEachIndexed { index, (value, label) ->
+            SegmentedButton(
+                selected = tier == value,
+                onClick = {
+                    if (value == CommandTier.GRANT_EXTREMELY_DANGEROUS && !extremeAccepted) confirming = true
+                    else onChange(value, false)
+                },
+                shape = SegmentedButtonDefaults.itemShape(index = index, count = TIERS.size),
+            ) { Text(label) }
+        }
+    }
+    if (tier == CommandTier.GRANT_EXTREMELY_DANGEROUS) {
+        Text(
+            "Extreme allows log gathering and factory reset. It also needs \"Allow dangerous commands\" above.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+    }
+    if (confirming) {
+        ExtremeDisclaimerDialog(
+            onAccept = {
+                confirming = false
+                onChange(CommandTier.GRANT_EXTREMELY_DANGEROUS, true)
+            },
+            onCancel = { confirming = false },
+        )
     }
 }
 

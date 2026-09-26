@@ -3,7 +3,11 @@ package coredevices.coreapp.automation
 import android.content.Context
 import coredevices.coreapp.automation.command.CommandExecutor
 import coredevices.coreapp.automation.command.CommandHandler
+import coredevices.coreapp.automation.command.AutomationJobs
 import coredevices.coreapp.automation.command.LibPebbleCommandHandler
+import coredevices.coreapp.automation.command.LibPebbleWatchControl
+import coredevices.coreapp.automation.command.WatchControl
+import coredevices.coreapp.automation.command.WatchControlCommands
 import coredevices.coreapp.automation.events.EventDispatcher
 import coredevices.coreapp.automation.events.ListenerHub
 import coredevices.coreapp.automation.service.LibPebbleStateProvider
@@ -14,6 +18,10 @@ import coredevices.coreapp.automation.trust.ClientTrustStore
 import coredevices.coreapp.automation.trust.ConsentController
 import coredevices.coreapp.automation.trust.PackageInspector
 import io.rebble.libpebblecommon.connection.LibPebble
+import kotlinx.coroutines.CoroutineName
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import org.koin.core.module.dsl.singleOf
 import org.koin.dsl.module
 import kotlin.uuid.Uuid
@@ -31,7 +39,13 @@ val taskerModule = module {
     single { CallerVerifier(get(), get<ClientTrustStore>()) }
     single { ConsentController(get<Context>(), get()) }
     single<StateProvider> { LibPebbleStateProvider(get(), get<Context>()) }
-    single<CommandHandler> { LibPebbleCommandHandler(get<LibPebble>(), get<EventDispatcher>()) }
+    single<WatchControl> { LibPebbleWatchControl() }
+    single { AutomationFiles(get<Context>()) }
+    single { AutomationJobs(CoroutineScope(SupervisorJob() + Dispatchers.Default + CoroutineName("AutomationJobs")), get()) }
+    single { WatchControlCommands(get<LibPebble>(), get(), get(), get()) }
+    single<CommandHandler> {
+        LibPebbleCommandHandler(get<LibPebble>(), get<EventDispatcher>(), control = get(), controlCommands = get())
+    }
     single { CommandExecutor(get<CommandHandler>()) }
     single {
         ClientTether(

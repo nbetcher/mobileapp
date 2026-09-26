@@ -34,7 +34,12 @@ class CommandActuationTest {
         every { getLocker(any(), any(), any()) } returns MutableStateFlow(emptyList())
         every { getLockerApp(any()) } returns MutableStateFlow(null)
     }
-    private fun handler(lp: LibPebble) = LibPebbleCommandHandler(lp, EventDispatcher("commands"))
+    private val control = mockk<WatchControl>(relaxed = true) {
+        every { prefSupport(any(), any()) } returns PrefSupport.UNKNOWN
+        coEvery { writePrefAndAwait(any(), any(), any(), any()) } answers { arg<() -> Unit>(3).invoke(); PrefSupport.UNKNOWN }
+    }
+    private fun handler(lp: LibPebble) = LibPebbleCommandHandler(lp, EventDispatcher("commands"), control = control,
+        controlCommands = WatchControlCommands(lp, control, mockk(relaxed = true), mockk(relaxed = true)))
     private fun command(type: String, watch: String? = null, vararg args: Pair<String, String>) =
         CommandEnvelope(type = type, watch = watch, args = args.toMap())
     private fun ok(result: CommandResult) = assertIs<CommandResult.Ok>(result).data
@@ -160,9 +165,24 @@ class CommandActuationTest {
         coVerify(exactly=0) { lp.sendNotification(any(),any()); b.launchApp(any()); b.sendAppMessage(any()); b.sendPing(any()) }
     }
 
+    @Test fun setPrefRespectsTheOnlyConnectedWatchsSupport() = runTest {
+        val a = watch("A"); val lp = lp(a); val handler = handler(lp)
+        val quiet = command(CommandCatalog.WATCH_SET_PREF, null, "pref_key" to "dndManuallyEnabled", "pref_value" to "on")
+        every { control.prefSupport(a, "dndManuallyEnabled") } returns PrefSupport.UNSUPPORTED
+        failure(handler.handle(quiet), ErrorCode.PREF_UNSUPPORTED)
+        verify(exactly = 0) { lp.setWatchPref(any()) }
+
+        every { control.prefSupport(a, "dndManuallyEnabled") } returns PrefSupport.UNKNOWN
+        coEvery { control.writePrefAndAwait(a, "dndManuallyEnabled", any(), any()) } answers { arg<() -> Unit>(3).invoke(); PrefSupport.UNSUPPORTED }
+        failure(handler.handle(quiet), ErrorCode.PREF_UNSUPPORTED)
+        coEvery { control.writePrefAndAwait(a, "dndManuallyEnabled", any(), any()) } answers { arg<() -> Unit>(3).invoke(); PrefSupport.SUPPORTED }
+        assertEquals("supported", ok(handler.handle(quiet))["watch_status"])
+        verify(exactly = 2) { lp.setWatchPref(any()) }
+    }
+
     @Test fun unknownAndUnimplementedCommandsFailExplicitly() = runTest {
         val handler = handler(lp())
-        for (type in listOf("unknown", "notification.muteApp", "timeline.insert", "timeline.delete", "watch.screenshot", "health.snapshot", "fw.check")) {
+        for (type in listOf("unknown", "notification.muteApp", "timeline.insert", "timeline.delete", "health.snapshot", "fw.check")) {
             failure(handler.handle(command(type)), ErrorCode.UNSUPPORTED_COMMAND)
             assertFalse(type in CommandCatalog.types)
         }

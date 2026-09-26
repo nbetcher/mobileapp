@@ -98,7 +98,7 @@ class BridgeService : Service(), KoinComponent {
             val cursor = if (bootId == dispatcher.bootId) fromSeq else 0L
             // Long.MAX_VALUE requests registration proof only, never a replay payload.
             val batch = dispatcher.snapshot(cursor, transform = {
-                EventAccessPolicy.event(it, record.categories.filter(settings::isCategoryEnabled).toSet())
+                EventAccessPolicy.event(it, record.categories.filter(settings::isCategoryEnabled).toSet(), record.packageName)
             }).copy(
                 subscriptionToken = session?.token?.takeIf(listenerHub::registered))
             return BridgeJson.json.encodeToString(batch)
@@ -112,7 +112,7 @@ class BridgeService : Service(), KoinComponent {
                 authorized = { authorized(session) },
                 permitted = { it.category in session.client.categories },
                 closed = { sessions.remove(clientToken) }, ownerPackage = session.client.packageName,
-                transform = { EventAccessPolicy.event(it, session.client.categories.filter(settings::isCategoryEnabled).toSet()) },
+                transform = { EventAccessPolicy.event(it, session.client.categories.filter(settings::isCategoryEnabled).toSet(), session.client.packageName) },
                 goodbyeReason = { verificationError(verifier.verify(session.uid)) })
         }
 
@@ -137,7 +137,7 @@ class BridgeService : Service(), KoinComponent {
                 if (!authorized(session)) return@runBlocking err(ErrorCode.NOT_AUTHORIZED,
                     "Automation access changed before the command started")
                 commandExecutor.execute(clientToken = clientToken, commandJson = commandJson,
-                    grantedTier = CommandTier.fromGrant(record.tier),
+                    grantedTier = CommandTier.forClient(record),
                     dangerousEnabled = trustStore.dangerousCommandsEnabled.value,
                     clientIdentity = record.packageName)
             }
@@ -145,8 +145,8 @@ class BridgeService : Service(), KoinComponent {
     }
 
     private fun capabilities(): List<String> = listOf("events.core", "events.notifications", "events.health",
-        "events.cursor", "events.registration_ack", "events.registration_ack_only", "events.paged", "appmessages.replace_subscriptions", "commands.core", "commands.sensitive", "commands.dangerous", "appmessages") +
-        CommandCatalog.types.map { "command.$it" } + CommandCatalog.globalTypes.map { "command.global.$it" } +
+        "events.cursor", "events.registration_ack", "events.registration_ack_only", "events.paged", "appmessages.replace_subscriptions", "commands.core", "commands.sensitive", "commands.dangerous", "commands.extremely_dangerous", "events.owner_targeted", "appmessages") +
+        CommandCatalog.types.filter(commandExecutor::isAvailable).map { "command.$it" } + CommandCatalog.globalTypes.map { "command.global.$it" } +
         stateProvider.supportedCapabilities()
 
     private fun verificationError(result: CallerVerifier.Result): String = when (result) {

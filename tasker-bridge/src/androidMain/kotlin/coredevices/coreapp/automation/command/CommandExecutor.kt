@@ -18,7 +18,7 @@ import kotlinx.serialization.encodeToString
  *
  *  1. parse + validate the [CommandEnvelope] (bad JSON / unknown type ⇒ INVALID_ARGS / UNSUPPORTED_COMMAND)
  *  2. command-tier gate — the command's required tier must be ≤ the caller's granted tier (COMMAND_NOT_AUTHORIZED)
- *  3. dangerous-toggle gate — DANGEROUS commands additionally require the app-wide "dangerous commands"
+ *  3. dangerous-toggle gate — DANGEROUS and EXTREMELY_DANGEROUS commands additionally require the app-wide "dangerous commands"
  *     toggle to be ON (COMMAND_NOT_AUTHORIZED) (PLAN §5.5)
  *  4. per-(verified identity,type) token-bucket rate limit (RATE_LIMITED)
  *  5. dispatch to the [CommandHandler] under a cooperative [timeoutMs] (TIMEOUT/INTERNAL on failure)
@@ -64,7 +64,7 @@ class CommandExecutor(
             return err(ErrorCode.COMMAND_NOT_AUTHORIZED, "command tier '${cmd.type}' exceeds grant", cmd.idempotencyKey)
         }
 
-        if (required == CommandTier.DANGEROUS && !dangerousEnabled) {
+        if (required.rank >= CommandTier.DANGEROUS.rank && !dangerousEnabled) {
             return err(
                 ErrorCode.COMMAND_NOT_AUTHORIZED,
                 "dangerous commands are disabled in the app",
@@ -96,6 +96,9 @@ class CommandExecutor(
                 err(result.code, result.message, cmd.idempotencyKey)
         }
     }
+
+    /** Whether an allowlisted command can run on this build (advertised as a capability). */
+    fun isAvailable(type: String): Boolean = handler.isAvailable(type)
 
     /** Remove a deleted client's buckets; never call on token replacement/re-handshake. */
     fun clearClientRateLimits(clientIdentity: String) = rateLimiter.removePrefix("$clientIdentity:")

@@ -43,6 +43,7 @@ android {
             // it stays a separate directory so the module keeps its KMP shape for upstreaming.
             kotlin.srcDirs("src/commonMain/kotlin", "src/androidMain/kotlin")
             aidl.srcDirs("src/androidMain/aidl")
+            res.srcDirs("src/androidMain/res")
         }
         getByName("test") {
             kotlin.srcDirs("src/androidUnitTest/kotlin")
@@ -64,6 +65,9 @@ dependencies {
     implementation(libs.kermit)
     implementation(libs.serialization)
     implementation(libs.coroutines)
+    implementation(libs.androidx.core.ktx)
+    // Screenshots arrive as a Compose ImageBitmap from libpebble3.
+    implementation(libs.compose.ui)
 
     // kotlin-test-junit, not plain kotlin-test: the KMP variant resolution that binds a framework
     // to kotlin.test.Test isn't there for a plain Android unit-test source set.

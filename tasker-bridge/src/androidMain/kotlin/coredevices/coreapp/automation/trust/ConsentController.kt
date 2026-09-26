@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import coredevices.coreapp.automation.ClientRecord
+import coredevices.coreapp.automation.command.CommandTier
 import kotlin.time.Clock
 
 class ConsentController(
@@ -30,13 +31,30 @@ class ConsentController(
         if (!request.alerted && notifyReview()) trustStore.markAlerted(pkg, certSha256Hex)
     }
 
-    @Synchronized fun approve(pkg: String, label: String, certSha256Hex: String, categories: Set<String>, tier: String): Boolean {
+    /**
+     * @param extremeDisclaimerAccepted the user just accepted the extremely-dangerous disclaimer for this
+     *   client. Acceptance is kept per identity (package + cert), so it is asked only once per client.
+     */
+    @Synchronized fun approve(
+        pkg: String,
+        label: String,
+        certSha256Hex: String,
+        categories: Set<String>,
+        tier: String,
+        extremeDisclaimerAccepted: Boolean = false,
+    ): Boolean {
         val current = inspector.signingCertSha256(pkg)?.toHex() ?: return false
         if (current != certSha256Hex) {
             onUnknownClient(pkg, current, inspector.installSource(pkg))
             return false
         }
-        trustStore.approve(ClientRecord(pkg, current, label, categories, tier, Clock.System.now().toEpochMilliseconds()))
+        val now = Clock.System.now().toEpochMilliseconds()
+        val acceptedAt = trustStore.get(pkg)?.takeIf { it.certSha256 == current }?.extremeDisclaimerAcceptedAtMs
+            ?: now.takeIf { extremeDisclaimerAccepted }
+        require(tier != CommandTier.GRANT_EXTREMELY_DANGEROUS || acceptedAt != null) {
+            "the extremely dangerous tier needs the accepted disclaimer"
+        }
+        trustStore.approve(ClientRecord(pkg, current, label, categories, tier, now, acceptedAt))
         reconcileNotifications()
         return true
     }

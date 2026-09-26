@@ -17,6 +17,9 @@ fun interface CommandHandler {
 
     /** Identity supplied by the verified service, never read from caller-controlled arguments. */
     suspend fun handle(command: CommandEnvelope, clientIdentity: String): CommandResult = handle(command)
+
+    /** False for allowlisted commands this build cannot run yet; they are then not advertised. */
+    fun isAvailable(type: String): Boolean = true
 }
 
 sealed interface CommandResult {

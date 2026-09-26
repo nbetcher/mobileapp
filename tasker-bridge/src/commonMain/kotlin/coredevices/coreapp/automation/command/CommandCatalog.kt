@@ -1,5 +1,7 @@
 package coredevices.coreapp.automation.command
 
+import coredevices.coreapp.automation.ClientRecord
+
 /**
  * Closed allowlist of executable command types and their required command tier (HLDD-002 §6,
  * PLAN §5.5). The [CommandExecutor] consults this map BEFORE dispatching — an unknown [type] is
@@ -17,17 +19,29 @@ enum class CommandTier(val rank: Int) {
     /** User-visible side effects on connectivity/notifications: connect, disconnect, mute, prefs. */
     SENSITIVE(1),
 
-    /** Destructive / security-relevant: forget watch, dev connection, firmware sideload. Requires the
+    /** Destructive / security-relevant: dev connection, reboot, remote input, firmware install. Requires the
      *  app's explicit "dangerous commands" toggle in addition to the tier grant (PLAN §5.5). */
-    DANGEROUS(2);
+    DANGEROUS(2),
+
+    /** Exposes sensitive personal data or destroys data irrecoverably: log gathering, factory reset.
+     *  Needs the dangerous toggle plus the client's accepted one-time disclaimer. */
+    EXTREMELY_DANGEROUS(3);
 
     companion object {
-        /** Parse a persisted ClientRecord.tier string ("normal"|"sensitive"|"dangerous"). */
+        const val GRANT_EXTREMELY_DANGEROUS = "extremely_dangerous"
+
+        /** Parse a persisted ClientRecord.tier string ("normal"|"sensitive"|"dangerous"|"extremely_dangerous"). */
         fun fromGrant(grant: String): CommandTier = when (grant.lowercase()) {
             "sensitive" -> SENSITIVE
             "dangerous" -> DANGEROUS
+            GRANT_EXTREMELY_DANGEROUS -> EXTREMELY_DANGEROUS
             "normal" -> NORMAL
             else -> NONE
+        }
+
+        /** The tier a client may actually use: an extreme grant without an accepted disclaimer is only dangerous. */
+        fun forClient(record: ClientRecord): CommandTier = fromGrant(record.tier).let {
+            if (it == EXTREMELY_DANGEROUS && record.extremeDisclaimerAcceptedAtMs == null) DANGEROUS else it
         }
     }
 }
@@ -55,6 +69,19 @@ object CommandCatalog {
     /** Read-only: list the installed locker apps/faces (UUID + title) so clients can offer a picker. */
     const val SYSTEM_GET_LOCKER = "system.getLocker"
 
+    const val WATCH_REBOOT = "watch.reboot"
+    const val WATCH_PRESS_BUTTON = "watch.pressButton"
+    const val WATCH_SWIPE = "watch.swipe"
+    const val WATCH_STOP_APP = "watch.stopApp"
+    const val WATCH_SCREENSHOT = "watch.screenshot"
+    const val WATCH_SYNC_TIME = "watch.syncTime"
+    const val WATCH_CHECK_FIRMWARE = "watch.checkFirmware"
+    const val WATCH_INSTALL_FIRMWARE = "watch.installFirmware"
+    const val WATCH_LIST_PREFS = "watch.listPrefs"
+    const val WATCH_GET_PREF = "watch.getPref"
+    const val WATCH_GATHER_LOGS = "watch.gatherLogs"
+    const val WATCH_FACTORY_RESET = "watch.factoryReset"
+
     /** type -> minimum required tier. The set of keys IS the allowlist. */
     val tiers: Map<String, CommandTier> = mapOf(
         WATCH_GET_INFO to CommandTier.NORMAL,
@@ -70,6 +97,19 @@ object CommandCatalog {
         WATCH_CONNECT to CommandTier.SENSITIVE,
         WATCH_DISCONNECT to CommandTier.SENSITIVE,
         DEV_TOGGLE_CONNECTION to CommandTier.DANGEROUS,
+        WATCH_STOP_APP to CommandTier.NORMAL,
+        WATCH_SYNC_TIME to CommandTier.NORMAL,
+        WATCH_CHECK_FIRMWARE to CommandTier.NORMAL,
+        WATCH_LIST_PREFS to CommandTier.NORMAL,
+        WATCH_GET_PREF to CommandTier.NORMAL,
+        // The screen can show notification text regardless of the notification-content setting.
+        WATCH_SCREENSHOT to CommandTier.SENSITIVE,
+        WATCH_REBOOT to CommandTier.DANGEROUS,
+        WATCH_PRESS_BUTTON to CommandTier.DANGEROUS,
+        WATCH_SWIPE to CommandTier.DANGEROUS,
+        WATCH_INSTALL_FIRMWARE to CommandTier.DANGEROUS,
+        WATCH_GATHER_LOGS to CommandTier.EXTREMELY_DANGEROUS,
+        WATCH_FACTORY_RESET to CommandTier.EXTREMELY_DANGEROUS,
     )
 
     /** Exact implemented commands: advertise each as `command.<type>`. */

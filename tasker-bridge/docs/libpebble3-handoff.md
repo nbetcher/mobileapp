@@ -8,7 +8,7 @@
   - Prefer **new** files, and new members appended to existing interfaces, over reshaping upstream code.
   - Put fork-only glue under `io.rebble.libpebblecommon.automation` (the package that already holds `AutomationAppMessageHook`).
   - Mark each call site you add inside an upstream function with `// BRIDGE-TAP: <id>`, the fork's existing convention (see `services/appmessage/AppMessageService.kt:60`). The sync workflow is told to preserve those anchors.
-- Scope is **libpebble3 only**. The Tasker bridge commands, events, tiers, rate limits and consent UI live in `tasker-bridge/` and are done separately. This hand-off only has to provide the APIs listed below.
+- Scope is **libpebble3 only**, plus switching one bridge adapter over to the new APIs (section 6). The Tasker bridge commands, events, tiers, rate limits and consent UI are already in `tasker-bridge/` and `composeApp/.../automation/`.
 - **iOS: no work.** Automation is Android-only. Protocol code still goes in `commonMain`, because that is where libpebble3's protocol and services live and moving it would diverge from upstream. Add no iOS wiring, UI, or testing. `FakeLibPebble` and other test doubles need stubs so everything compiles.
 - Follow `CLAUDE.md`:
   - minimal comments;
@@ -118,17 +118,37 @@ Changes:
 - Do **not** add a hand-maintained per-board support table. It would copy firmware `#ifdef`s that change from release to release. The watch's own accept/reject answer is the authority.
 - Tests: an InvalidOperation reply on a WatchPrefs insert records the key and emits an outcome; Success and DataStale do not record it; inserts to other databases are unaffected.
 
-## Out of scope here (bridge / app side, done separately)
+## 6. Switch the bridge adapter to the new APIs
 
-- New commands: `watch.reboot`, `watch.pressButton`, `watch.swipe`, `watch.stopApp`, `watch.screenshot`, `watch.syncTime`, `watch.checkFirmware`, `watch.installFirmware`, `watch.getPref`, `system.listPrefs`, `watch.gatherLogs`, `watch.factoryReset`.
-- New events: preference changed, firmware update available.
+The bridge side is already built against a seam: `WatchControl` in
+`tasker-bridge/src/androidMain/kotlin/coredevices/coreapp/automation/command/WatchControl.kt`. Its
+`LibPebbleWatchControl` adapter reports the pieces above as unavailable until they exist. Once sections
+1–5 land, update only that adapter:
+
+| Adapter member | Today | After this work |
+|---|---|---|
+| `reboot` | `sendPPMessage(ResetMessage.Reset)` | `device.reset()` |
+| `remoteInputAvailable` | `false` | `true` |
+| `pressButton` / `swipe` | `UNSUPPORTED` | call the section 2 service and map `RemoteInputResult` to `RemoteInputOutcome` one to one |
+| `syncTime` | `updateTime()` then `Unverified` | `updateTimeVerified()` mapped to `Verified` / `Mismatch` / `Timeout` |
+| `firmwareCheckedAt` | `null` | `device.firmwareUpdateAvailable.checkedAt` |
+| `prefSupport` | `UNSUPPORTED` without BlobDB v2, else `UNKNOWN` | also `UNSUPPORTED` if the key is in `rejectedWatchPrefs`, `SUPPORTED` if the watch has accepted it |
+| `writePrefAndAwait` | write, then `prefSupport` | subscribe to `watchPrefSyncOutcomes`, write, wait for this key's outcome; on timeout (e.g. an unchanged value that is never re-sent) fall back to `prefSupport` |
+
+Update `WatchControlCommandsTest` / `CommandActuationTest` only if a mapping changes. The bridge's
+contract (`tasker-bridge/README.md`) does not change.
+
+## Already done on the bridge / app side
+
+- Commands: `watch.reboot`, `watch.pressButton`, `watch.swipe`, `watch.stopApp`, `watch.screenshot`, `watch.syncTime`, `watch.checkFirmware`, `watch.installFirmware`, `watch.getPref`, `watch.listPrefs`, `watch.gatherLogs`, `watch.factoryReset`.
+- Events: preference changed, firmware update available.
 - Rate limits: reboot 60 s; time sync 30 min after success, 30 s otherwise.
 - The new EXTREMELY_DANGEROUS tier and its countdown disclaimer dialog.
 - Log gathering (`ConnectedPebble.Logs.gatherLogs()`), factory reset (`Debug.factoryReset()`), screenshot (`Screenshot.takeScreenshot()`) and stop app (`AppRunState.stopApp()`) already exist in libpebble3 and need no changes here.
 
 ## Done when
 
-- All five sections are committed.
+- All six sections are committed.
 - `./gradlew :libpebble3:jvmTest` passes.
 - `./gradlew :androidApp:assembleDebug` builds.
 - The upstream-owned diff is limited to: new members on existing interfaces, the endpoint enum entry, the packet registrations, the `FirmwareUpdateCheckState` field, and the `BRIDGE-TAP` call site in `BlobDB.kt`.
