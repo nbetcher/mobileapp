@@ -547,6 +547,9 @@ fun timePacketsRegister() {
     PacketRegistry.register(ProtocolEndpoint.TIME, TimeMessage.Message.SetUTC.value) {
         TimeMessage.SetUTC()
     }
+    PacketRegistry.register(ProtocolEndpoint.TIME, TimeMessage.Message.GetTimeResponse.value) {
+        TimeMessage.GetTimeResponse()
+    }
 }
 
 fun systemPacketsRegister() {

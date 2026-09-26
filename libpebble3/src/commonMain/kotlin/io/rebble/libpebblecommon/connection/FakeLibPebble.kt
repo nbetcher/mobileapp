@@ -1,5 +1,6 @@
 package io.rebble.libpebblecommon.connection
 
+import io.rebble.libpebblecommon.automation.TimeSyncResult
 import io.rebble.libpebblecommon.automation.RemoteInputButton
 import io.rebble.libpebblecommon.automation.RemoteInput
 import io.rebble.libpebblecommon.automation.RemoteInputSwipeDirection
@@ -687,6 +688,8 @@ class FakeConnectedDevice(
     )
 
     override suspend fun updateTime() {}
+    override suspend fun updateTimeVerified(): TimeSyncResult = TimeSyncResult.Success(0)
+
     override suspend fun updateTimeIfNeeded() {}
 
     override fun inboundAppMessages(appUuid: Uuid): Flow<AppMessageData> {

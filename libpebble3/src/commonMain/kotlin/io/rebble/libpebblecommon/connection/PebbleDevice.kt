@@ -1,5 +1,6 @@
 package io.rebble.libpebblecommon.connection
 
+import io.rebble.libpebblecommon.automation.TimeSyncResult
 import io.rebble.libpebblecommon.automation.AutomationWatchServices
 import io.rebble.libpebblecommon.automation.RemoteInput
 import androidx.compose.runtime.Stable
@@ -200,6 +201,8 @@ object ConnectedPebble {
 
     interface Time {
         suspend fun updateTime()
+        /** Sets the time, then reads the watch clock back to confirm it took. */
+        suspend fun updateTimeVerified(): TimeSyncResult
         suspend fun updateTimeIfNeeded()
     }
 

@@ -1,5 +1,7 @@
 package io.rebble.libpebblecommon.services
 
+import kotlin.math.abs
+import io.rebble.libpebblecommon.automation.TimeSyncResult
 import co.touchlab.kermit.Logger
 import io.rebble.libpebblecommon.connection.ConnectedPebble
 import io.rebble.libpebblecommon.connection.PebbleProtocolHandler
@@ -255,6 +257,21 @@ class SystemService(
         )
     }
 
+    override suspend fun updateTimeVerified(): TimeSyncResult {
+        updateTime()
+        val watchTime = withTimeoutOrNull(TIME_READBACK_TIMEOUT) {
+            coroutineScope {
+                val response = async(start = CoroutineStart.UNDISPATCHED) {
+                    protocolHandler.inboundMessages.first { it is TimeMessage.GetTimeResponse } as TimeMessage.GetTimeResponse
+                }
+                protocolHandler.send(TimeMessage.GetTimeRequest())
+                response.await().time.get()
+            }
+        } ?: return TimeSyncResult.Timeout
+        val skew = watchTime.toLong() - Clock.System.now().epochSeconds
+        return if (abs(skew) <= MAX_TIME_SKEW_SECONDS) TimeSyncResult.Success(skew) else TimeSyncResult.Mismatch(skew)
+    }
+
     override suspend fun updateTimeIfNeeded() {
         val currentTz = TimeZone.currentSystemDefault().id
         val previousTz = lastSentTimezoneId.load()
@@ -267,6 +284,8 @@ class SystemService(
 }
 
 private val FIRMWARE_UPDATE_STATUS_TIMEOUT = 15.seconds
+private val TIME_READBACK_TIMEOUT = 5.seconds
+private const val MAX_TIME_SKEW_SECONDS = 2L
 
 private val FIRMWARE_VERSION_REGEX = Regex("v?([0-9]+)\\.([0-9]+)(?:\\.([0-9]+))?(?:-(.*))?")
 
