@@ -79,6 +79,7 @@ import kotlinx.io.files.Path
 import org.koin.core.Koin
 import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.time.Duration
+import kotlin.time.Instant
 import kotlin.uuid.Uuid
 
 data class PhoneCapabilities(val capabilities: Set<ProtocolCapsFlag>)
@@ -279,6 +280,8 @@ interface TokenProvider {
 data class FirmwareUpdateCheckState(
     val checkingForUpdates: Boolean,
     val result: FirmwareUpdateCheckResult?,
+    /** When the last check that reached the update server finished; a failed check leaves it unchanged. */
+    val checkedAt: Instant? = null,
 )
 
 sealed class FirmwareUpdateCheckResult {
