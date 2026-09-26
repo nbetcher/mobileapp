@@ -8,6 +8,10 @@ object EventAccessPolicy {
         fwProgress = ref.fwProgress.takeIf { "system" in categories },
         currentAppUuid = ref.currentAppUuid.takeIf { "apps" in categories },
     )
-    fun event(event: EventEnvelope, categories: Set<String>): EventEnvelope? =
-        event.takeIf { it.category in categories }?.copy(watch = watch(event.watch, categories))
+    /** Data key naming the only package an event may reach (e.g. the requester of a job result). */
+    const val OWNER_KEY = "owner"
+
+    fun event(event: EventEnvelope, categories: Set<String>, pkg: String? = null): EventEnvelope? =
+        event.takeIf { it.category in categories && (it.data[OWNER_KEY] ?: pkg) == pkg }
+            ?.copy(watch = watch(event.watch, categories))
 }

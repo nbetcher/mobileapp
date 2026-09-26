@@ -3,6 +3,8 @@ package coredevices.coreapp.automation
 import co.touchlab.kermit.Logger
 import coredevices.coreapp.automation.events.ConnectivityCollector
 import coredevices.coreapp.automation.events.EventDispatcher
+import coredevices.coreapp.automation.events.FirmwareOfferCollector
+import coredevices.coreapp.automation.events.WatchPrefCollector
 import coredevices.coreapp.automation.events.ListenerHub
 import coredevices.coreapp.automation.events.AppMessageCollector
 import coredevices.coreapp.automation.events.NotificationCollector
@@ -37,6 +39,7 @@ class AutomationBridge(
     private val settings: AutomationSettings,
     private val clientTether: ClientTether,
     private val inspector: PackageInspector,
+    private val files: AutomationFiles,
 ) {
     private val logger = Logger.withTag("AutomationBridge")
 
@@ -51,6 +54,8 @@ class AutomationBridge(
     private val notifications = NotificationCollector(dispatcher, settings)
     private val appMessages = AppMessageCollector(dispatcher, libPebble)
     private val timeline = TimelineCollector(dispatcher)
+    private val watchPrefs = WatchPrefCollector(libPebble, dispatcher)
+    private val firmwareOffers = FirmwareOfferCollector(libPebble, dispatcher)
     private var started = false
     private val policyLock = Any()
 
@@ -59,6 +64,7 @@ class AutomationBridge(
         if (started) return
         started = true
         logger.i { "init bootId=${dispatcher.bootId}" }
+        files.restoreExpiries()
         // Consent gate (PLAN §5.4): drop any event whose category is disabled, or everything when
         // the master switch is off. Enforced centrally in the dispatcher so every collector AND the
         // getEventsSince recovery path respect it uniformly.
@@ -109,6 +115,8 @@ class AutomationBridge(
         notifications.start(scope)
         appMessages.start(scope)
         timeline.start(scope)
+        watchPrefs.start(scope)
+        firmwareOffers.start(scope)
         listenerHub.start(scope)
         // Keep consented clients alive while a watch is connected so events aren't delivered to a dead
         // process (the reverse-bind tether). No-op for clients that don't expose a KEEP_ALIVE service.

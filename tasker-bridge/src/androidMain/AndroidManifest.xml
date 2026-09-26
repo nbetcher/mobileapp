@@ -19,6 +19,18 @@
                 <action android:name="coredevices.coreapp.automation.BridgeService" />
             </intent-filter>
         </service>
+
+        <!-- Screenshots and log dumps handed to the automation client that requested them. Read access
+             is granted per file to that client's package only. -->
+        <provider
+            android:name="coredevices.coreapp.automation.AutomationFileProvider"
+            android:authorities="${applicationId}.automation.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/automation_file_paths" />
+        </provider>
     </application>
 
 </manifest>

@@ -123,6 +123,7 @@ class LibPebbleCommandHandlerTest {
     @Test
     fun setPref_writesTypedBooleanPreference_fromFriendlyInput() = runTest {
         val lp = mockk<LibPebble>(relaxed = true)
+        every { lp.watches } returns MutableStateFlow(emptyList())
         val prefSlot = slot<WatchPreference<*>>()
         every { lp.setWatchPref(capture(prefSlot)) } just Runs
 

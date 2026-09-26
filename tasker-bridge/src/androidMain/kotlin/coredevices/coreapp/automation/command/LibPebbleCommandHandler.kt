@@ -1,15 +1,12 @@
 package coredevices.coreapp.automation.command
 
-import co.touchlab.kermit.Logger
 import coredevices.coreapp.automation.CommandEnvelope
 import coredevices.coreapp.automation.ErrorCode
 import coredevices.coreapp.automation.events.EventDispatcher
 import io.rebble.libpebblecommon.SystemAppIDs.ANDROID_NOTIFICATIONS_UUID
 import io.rebble.libpebblecommon.automation.AutomationAppMessageHook
 import io.rebble.libpebblecommon.connection.ActiveDevice
-import io.rebble.libpebblecommon.connection.CommonConnectedDevice
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
-import io.rebble.libpebblecommon.connection.KnownPebbleDevice
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.connection.PebbleDevice
 import io.rebble.libpebblecommon.connection.endpointmanager.timeline.CustomTimelineActionHandler
@@ -51,17 +48,24 @@ class LibPebbleCommandHandler(
     private val libPebble: LibPebble,
     private val dispatcher: EventDispatcher,
     private val timeSource: TimeSource = TimeSource.Monotonic,
+    private val control: WatchControl = LibPebbleWatchControl(),
+    private val controlCommands: WatchControlCommands? = null,
 ) : CommandHandler {
-    private val logger = Logger.withTag("AutomationBridge")
+    private val watches = WatchSelector(libPebble)
     private val json = Json { ignoreUnknownKeys = true }
     private val pingCookies = AtomicInteger(Random.nextInt())
 
     override suspend fun handle(command: CommandEnvelope, clientIdentity: String): CommandResult =
         if (command.type == CommandCatalog.APPMESSAGE_SUBSCRIBE) subscribeAppMessage(command, clientIdentity)
         else if (command.type == CommandCatalog.NOTIFICATION_SEND && command.watch.isNullOrBlank()) sendNotification(command, clientIdentity)
+        else if (controlCommands != null && command.type in WatchControlCommands.TYPES) controlCommands.handle(command, clientIdentity)
         else handle(command)
 
+    override fun isAvailable(type: String): Boolean =
+        type !in WatchControlCommands.TYPES || controlCommands?.isAvailable(type) == true
+
     override suspend fun handle(command: CommandEnvelope): CommandResult {
+        if (controlCommands != null && command.type in WatchControlCommands.TYPES) return controlCommands.handle(command, "")
         if (command.type in CommandCatalog.globalTypes && !command.watch.isNullOrBlank()) {
             return CommandResult.Failure(ErrorCode.INVALID_ARGS, "${command.type} is global; a watch selector is unsupported")
         }
@@ -328,7 +332,7 @@ class LibPebbleCommandHandler(
     }
 
     // --- watch.setPref (generic typed pref via WatchPref.decodeValue) ---
-    private fun setPref(command: CommandEnvelope): CommandResult {
+    private suspend fun setPref(command: CommandEnvelope): CommandResult {
         val prefKey = command.args["pref_key"]?.trim()
         if (prefKey.isNullOrEmpty()) return CommandResult.Failure(ErrorCode.INVALID_ARGS, "missing 'pref_key'")
         val pref = WatchPref.from(prefKey)
@@ -344,16 +348,29 @@ class LibPebbleCommandHandler(
         return applyPref(pref, encoded)
     }
 
-    /** Star-capture helper: decode the string with the pref's own codec and write it. */
-    private fun <T> applyPref(pref: WatchPref<T>, encoded: String): CommandResult {
+    /**
+     * Star-capture helper: decode the string with the pref's own codec and write it. Prefs are
+     * phone-global; with exactly one connected watch, that watch's support is checked before and
+     * after the write.
+     */
+    private suspend fun <T> applyPref(pref: WatchPref<T>, encoded: String): CommandResult {
         val value = try {
             pref.decodeValue(encoded)
         } catch (e: Exception) {
             return CommandResult.Failure(ErrorCode.INVALID_ARGS, "bad value for '${pref.id}': ${e.message}")
         }
         if (pref.encodeValue(value) != encoded) return CommandResult.Failure(ErrorCode.INVALID_ARGS, "invalid value for '${pref.id}'")
-        libPebble.setWatchPref(WatchPreference(pref, value))
-        return CommandResult.Ok(mapOf("pref_id" to pref.id, "value" to pref.encodeValue(value)))
+        val write = { libPebble.setWatchPref(WatchPreference(pref, value)) }
+        val target = resolveConnected(null)
+        val status = if (target == null) {
+            write()
+            PrefSupport.UNKNOWN
+        } else {
+            if (control.prefSupport(target, pref.id) == PrefSupport.UNSUPPORTED) return WatchControlCommands.unsupportedPref(pref, target)
+            control.writePrefAndAwait(target, pref.id, PREF_ACK_TIMEOUT_MS, write)
+                .also { if (it == PrefSupport.UNSUPPORTED) return WatchControlCommands.unsupportedPref(pref, target) }
+        }
+        return CommandResult.Ok(mapOf("pref_id" to pref.id, "value" to pref.encodeValue(value), "watch_status" to status.wire))
     }
 
     // --- watch.setQuickLaunch (maps button+press -> a Quick Launch pref) ---
@@ -375,30 +392,11 @@ class LibPebbleCommandHandler(
         return CommandResult.Ok(mapOf("pref_id" to prefId, "enabled" to setting.enabled.toString()))
     }
 
-    // --- watch resolution helpers ---
-    private fun resolveConnected(selector: String?): CommonConnectedDevice? {
-        val connected = libPebble.watches.value.filterIsInstance<CommonConnectedDevice>()
-        return if (selector.isNullOrBlank()) {
-            connected.singleOrNull()
-        } else {
-            connected.singleOrNull { it.serial == selector || it.identifier.asString == selector }
-        }
-    }
+    private fun resolveConnected(selector: String?) = watches.connected(selector)
+    private fun resolveKnown(selector: String?) = watches.known(selector)
+    private fun noWatch(selector: String?) = watches.noWatch(selector)
 
-    private fun resolveKnown(selector: String?): KnownPebbleDevice? {
-        val known = libPebble.watches.value.filterIsInstance<KnownPebbleDevice>()
-        return if (selector.isNullOrBlank()) {
-            known.singleOrNull()
-        } else {
-            known.singleOrNull { it.serial == selector || it.identifier.asString == selector }
-        }
-    }
-
-    private fun noWatch(selector: String?): CommandResult {
-        logger.d { "no matching watch for selector=$selector" }
-        return CommandResult.Failure(
-            ErrorCode.INVALID_ARGS,
-            if (selector.isNullOrBlank()) "no unique eligible watch; select a watch" else "no unique eligible watch matching '$selector'",
-        )
+    private companion object {
+        const val PREF_ACK_TIMEOUT_MS = 3_000L
     }
 }

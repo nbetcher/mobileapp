@@ -29,6 +29,18 @@ object ErrorCode {
 
     /** A command was rejected by per-type rate limiting (HLDD-002 §6, PLAN §5.5). */
     const val RATE_LIMITED = "RATE_LIMITED"
+
+    /** The target watch reports the preference as unsupported. */
+    const val PREF_UNSUPPORTED = "PREF_UNSUPPORTED"
+
+    /** No firmware update is available; a successful check ran within the last 24 hours. */
+    const val FIRMWARE_UPDATE_UNAVAILABLE = "FIRMWARE_UPDATE_UNAVAILABLE"
+
+    /** No firmware update is available and no successful check ran within the last 24 hours. */
+    const val FIRMWARE_CHECK_STALE = "FIRMWARE_CHECK_STALE"
+
+    /** The watch is busy with another injected input sequence or a firmware update; retry later. */
+    const val WATCH_BUSY = "WATCH_BUSY"
 }
 
 /** Client → bridge identification at handshake (HLDD-002 §4.2). */

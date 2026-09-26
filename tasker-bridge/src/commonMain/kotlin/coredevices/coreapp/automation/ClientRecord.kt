@@ -14,9 +14,11 @@ data class ClientRecord(
     val label: String,
     /** Granted event categories (e.g. connectivity, apps). Content/health are opt-in (HLDD-001 §10). */
     val categories: Set<String> = emptySet(),
-    /** Granted command tier: normal | sensitive | dangerous (HLDD-002 §6.2). */
+    /** Granted command tier: normal | sensitive | dangerous | extremely_dangerous (HLDD-002 §6.2). */
     val tier: String = "normal",
     val approvedAtMs: Long,
+    /** When the user accepted the extremely-dangerous disclaimer for this identity; null = never. */
+    val extremeDisclaimerAcceptedAtMs: Long? = null,
 )
 
 /** Grants echoed to a client at handshake (HLDD-002 §4.2). */

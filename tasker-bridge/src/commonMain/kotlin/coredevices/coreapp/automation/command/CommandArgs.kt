@@ -55,4 +55,26 @@ internal object CommandArgs {
             .map { it.coerceIn(10L, 10_000L).toUInt() }
         return nums.ifEmpty { null }
     }
+
+    /** PebbleOS ButtonId: back=0, up=1, select=2, down=3. */
+    fun buttonId(name: String?): Int? = when (name?.trim()?.lowercase()) {
+        "back" -> 0
+        "up" -> 1
+        "select", "middle" -> 2
+        "down" -> 3
+        else -> null
+    }
+
+    /** PebbleOS RemoteInputSwipeDirection: up=0, down=1, left=2, right=3. */
+    fun swipeDirection(name: String?): Int? = when (name?.trim()?.lowercase()) {
+        "up" -> 0
+        "down" -> 1
+        "left" -> 2
+        "right" -> 3
+        else -> null
+    }
+
+    /** [raw] as an int in [range], [default] when absent/blank, or null when present but invalid. */
+    fun boundedInt(raw: String?, range: IntRange, default: Int): Int? =
+        if (raw.isNullOrBlank()) default else raw.trim().toIntOrNull()?.takeIf { it in range }
 }
