@@ -9,6 +9,7 @@ class AutomationWatchServices(
 ) {
     fun init(watchInfo: WatchInfo) {
         remoteInput.init(watchInfo.runningFwVersion)
-        prefSupport.init(watchInfo.runningFwVersion.stringVersion)
+        // Recovery firmware does not sync settings; its version must not reset what the main firmware refused.
+        if (!watchInfo.runningFwVersion.isRecovery) prefSupport.init(watchInfo.runningFwVersion.stringVersion)
     }
 }
