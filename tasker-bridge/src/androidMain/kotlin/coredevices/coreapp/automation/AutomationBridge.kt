@@ -39,6 +39,7 @@ class AutomationBridge(
     private val settings: AutomationSettings,
     private val clientTether: ClientTether,
     private val inspector: PackageInspector,
+    private val files: AutomationFiles,
 ) {
     private val logger = Logger.withTag("AutomationBridge")
 
@@ -63,6 +64,7 @@ class AutomationBridge(
         if (started) return
         started = true
         logger.i { "init bootId=${dispatcher.bootId}" }
+        files.restoreExpiries()
         // Consent gate (PLAN §5.4): drop any event whose category is disabled, or everything when
         // the master switch is off. Enforced centrally in the dispatcher so every collector AND the
         // getEventsSince recovery path respect it uniformly.

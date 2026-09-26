@@ -34,14 +34,27 @@ class AutomationFiles(
     fun share(file: File, pkg: String): String {
         val uri = uriFor(file)
         context.grantUriPermission(pkg, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        scope.launch {
-            delay(RETENTION_MS)
-            expire(file)
-        }
+        expireAt(file, nowMs() + RETENTION_MS)
         return uri.toString()
     }
 
-    /** Catches files whose scheduled expiry was lost with a previous process. */
+    /** Re-arms the expiry of files shared by a previous process. */
+    fun restoreExpiries() {
+        scope.launch {
+            root.listFiles()?.forEach { dir ->
+                dir.listFiles()?.forEach { expireAt(it, it.lastModified() + RETENTION_MS) }
+            }
+        }
+    }
+
+    private fun expireAt(file: File, atMs: Long) {
+        scope.launch {
+            delay((atMs - nowMs()).coerceAtLeast(0))
+            expire(file)
+        }
+    }
+
+    /** Catches files that were never shared, e.g. from a job that failed after creating one. */
     private fun prune(dir: File) {
         val cutoff = nowMs() - RETENTION_MS
         dir.listFiles()?.filter { it.lastModified() < cutoff }?.forEach(::expire)

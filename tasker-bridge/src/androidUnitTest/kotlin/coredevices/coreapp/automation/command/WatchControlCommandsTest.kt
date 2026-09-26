@@ -9,9 +9,12 @@ import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdater.Firm
 import io.rebble.libpebblecommon.database.dao.WatchPreference
 import io.rebble.libpebblecommon.database.entity.BoolWatchPref
 import io.rebble.libpebblecommon.services.FirmwareVersion
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.yield
 import kotlinx.serialization.json.Json
 import kotlin.test.*
 import kotlin.time.Clock
@@ -91,6 +94,32 @@ class WatchControlCommandsTest {
         assertEquals("available", result["status"])
         assertEquals("v4.38.2", result["version"])
         verify { a.checkforFirmwareUpdate(false) }
+    }
+
+    @Test fun unforcedFirmwareCheckDoesNotReplayAStaleFailure() = runTest {
+        val a = watch("A", FirmwareUpdateCheckResult.UpdateCheckFailed("offline"))
+        assertEquals("pending", ok(commands(a).run(CommandCatalog.WATCH_CHECK_FIRMWARE))["status"])
+    }
+
+    @Test fun aFreshSuccessfulCheckLetsInstallReportNoUpdate() = runTest {
+        val a = watch("A")
+        var state = FirmwareUpdateCheckState(false, null)
+        every { a.firmwareUpdateAvailable } answers { state }
+        every { a.checkforFirmwareUpdate(true) } answers { state = FirmwareUpdateCheckState(true, null) }
+        every { control.firmwareCheckedAt(a) } returns null
+        val devices = MutableStateFlow<List<PebbleDevice>>(listOf(a))
+        val lp = mockk<LibPebble>(relaxed = true) { every { watches } returns devices }
+        val commands = WatchControlCommands(lp, control, jobs, files, Cooldowns { nowMs }, clock)
+        backgroundScope.launch {
+            delay(100)
+            state = FirmwareUpdateCheckState(false, FirmwareUpdateCheckResult.FoundNoUpdate)
+            devices.value = emptyList()
+            yield()
+            devices.value = listOf(a)
+        }
+
+        assertEquals("none", ok(commands.run(CommandCatalog.WATCH_CHECK_FIRMWARE, "force" to "true"))["status"])
+        assertEquals(ErrorCode.FIRMWARE_UPDATE_UNAVAILABLE, failure(commands.run(CommandCatalog.WATCH_INSTALL_FIRMWARE)))
     }
 
     @Test fun pressButtonValidatesBeforeSendingAndMapsOutcomes() = runTest {
