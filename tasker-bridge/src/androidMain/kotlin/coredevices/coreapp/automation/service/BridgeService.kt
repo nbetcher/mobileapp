@@ -146,7 +146,7 @@ class BridgeService : Service(), KoinComponent {
 
     private fun capabilities(): List<String> = listOf("events.core", "events.notifications", "events.health",
         "events.cursor", "events.registration_ack", "events.registration_ack_only", "events.paged", "appmessages.replace_subscriptions", "commands.core", "commands.sensitive", "commands.dangerous", "commands.extremely_dangerous", "events.owner_targeted", "appmessages") +
-        CommandCatalog.types.filter(commandExecutor::isAvailable).map { "command.$it" } + CommandCatalog.globalTypes.map { "command.global.$it" } +
+        CommandCatalog.types.map { "command.$it" } + CommandCatalog.globalTypes.map { "command.global.$it" } +
         stateProvider.supportedCapabilities()
 
     private fun verificationError(result: CallerVerifier.Result): String = when (result) {

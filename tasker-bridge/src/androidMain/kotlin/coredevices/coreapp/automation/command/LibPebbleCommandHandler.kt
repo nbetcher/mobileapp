@@ -61,9 +61,6 @@ class LibPebbleCommandHandler(
         else if (controlCommands != null && command.type in WatchControlCommands.TYPES) controlCommands.handle(command, clientIdentity)
         else handle(command)
 
-    override fun isAvailable(type: String): Boolean =
-        type !in WatchControlCommands.TYPES || controlCommands?.isAvailable(type) == true
-
     override suspend fun handle(command: CommandEnvelope): CommandResult {
         if (controlCommands != null && command.type in WatchControlCommands.TYPES) return controlCommands.handle(command, "")
         if (command.type in CommandCatalog.globalTypes && !command.watch.isNullOrBlank()) {

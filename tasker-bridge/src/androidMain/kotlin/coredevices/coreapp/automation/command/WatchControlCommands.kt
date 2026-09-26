@@ -18,10 +18,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.hours
-import kotlin.time.Instant
 import kotlin.uuid.Uuid
 
 /** Watch control, firmware, preference and diagnostics commands (see [CommandCatalog]). */
@@ -37,12 +35,6 @@ class WatchControlCommands(
 ) {
     private val watches = WatchSelector(libPebble)
     private val json = Json { explicitNulls = false }
-    private val lastSuccessfulCheck = ConcurrentHashMap<String, Instant>()
-
-    fun isAvailable(type: String): Boolean = when (type) {
-        CommandCatalog.WATCH_PRESS_BUTTON, CommandCatalog.WATCH_SWIPE -> control.remoteInputAvailable
-        else -> true
-    }
 
     suspend fun handle(command: CommandEnvelope, clientIdentity: String): CommandResult = when (command.type) {
         CommandCatalog.WATCH_REBOOT -> reboot(command)
@@ -140,7 +132,6 @@ class WatchControlCommands(
         return when (outcome) {
             is TimeSyncOutcome.Verified ->
                 CommandResult.Ok(mapOf("serial" to device.serial, "verified" to "true", "skew_s" to outcome.skewSeconds.toString()))
-            TimeSyncOutcome.Unverified -> CommandResult.Ok(mapOf("serial" to device.serial, "verified" to "false"))
             is TimeSyncOutcome.Mismatch -> CommandResult.Failure(ErrorCode.INTERNAL, "the watch clock is still ${outcome.skewSeconds}s off")
             TimeSyncOutcome.Timeout -> CommandResult.Failure(ErrorCode.TIMEOUT, "the watch did not report its time back")
         }
@@ -156,17 +147,16 @@ class WatchControlCommands(
         val known = device.firmwareUpdateAvailable
         device.checkforFirmwareUpdate(force)
         val cached = !force && !known.checkingForUpdates && known.result.isSuccessfulCheck()
+        // Finished once the watch reports a different result object or a newer check time: a check that
+        // completes within milliseconds may never be seen as "checking" on the combined watches flow.
         val result = if (cached) known.result
         else withTimeoutOrNull(FIRMWARE_CHECK_WAIT_MS) {
-            var sawChecking = false
             libPebble.watches.map { list ->
                 (list.firstOrNull { it.identifier == device.identifier } as? CommonConnectedDevice)?.firmwareUpdateAvailable
             }.first { state ->
-                if (state?.checkingForUpdates == true) sawChecking = true
-                sawChecking && state?.checkingForUpdates == false
+                state != null && !state.checkingForUpdates && (state.result !== known.result || state.checkedAt != known.checkedAt)
             }?.result
         }
-        if (!cached && result.isSuccessfulCheck()) lastSuccessfulCheck[device.identifier.asString] = clock.now()
         return CommandResult.Ok(buildMap {
             put("serial", device.serial)
             when (result) {
@@ -185,7 +175,7 @@ class WatchControlCommands(
         }
         val update = device.firmwareUpdateAvailable.result as? FirmwareUpdateCheckResult.FoundUpdate
         if (update == null) {
-            val checkedAt = listOfNotNull(control.firmwareCheckedAt(device), lastSuccessfulCheck[device.identifier.asString]).maxOrNull()
+            val checkedAt = control.firmwareCheckedAt(device)
             return if (checkedAt != null && clock.now() - checkedAt < 24.hours) {
                 CommandResult.Failure(ErrorCode.FIRMWARE_UPDATE_UNAVAILABLE, "no firmware update is available")
             } else {

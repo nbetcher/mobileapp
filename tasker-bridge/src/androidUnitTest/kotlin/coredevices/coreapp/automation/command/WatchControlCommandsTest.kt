@@ -101,25 +101,27 @@ class WatchControlCommandsTest {
         assertEquals("pending", ok(commands(a).run(CommandCatalog.WATCH_CHECK_FIRMWARE))["status"])
     }
 
-    @Test fun aFreshSuccessfulCheckLetsInstallReportNoUpdate() = runTest {
+    @Test fun forcedCheckFinishesEvenWhenTheCheckingStateIsNeverSeen() = runTest {
         val a = watch("A")
-        var state = FirmwareUpdateCheckState(false, null)
+        val earlier = instant - 1.hours
+        var state = FirmwareUpdateCheckState(false, FirmwareUpdateCheckResult.FoundNoUpdate, earlier)
         every { a.firmwareUpdateAvailable } answers { state }
-        every { a.checkforFirmwareUpdate(true) } answers { state = FirmwareUpdateCheckState(true, null) }
-        every { control.firmwareCheckedAt(a) } returns null
         val devices = MutableStateFlow<List<PebbleDevice>>(listOf(a))
         val lp = mockk<LibPebble>(relaxed = true) { every { watches } returns devices }
         val commands = WatchControlCommands(lp, control, jobs, files, Cooldowns { nowMs }, clock)
-        backgroundScope.launch {
-            delay(100)
-            state = FirmwareUpdateCheckState(false, FirmwareUpdateCheckResult.FoundNoUpdate)
-            devices.value = emptyList()
-            yield()
-            devices.value = listOf(a)
+        for ((next, status) in listOf(
+            FirmwareUpdateCheckState(false, FirmwareUpdateCheckResult.FoundNoUpdate, instant) to "none",
+            FirmwareUpdateCheckState(false, FirmwareUpdateCheckResult.UpdateCheckFailed("offline"), instant) to "failed",
+        )) {
+            backgroundScope.launch {
+                delay(100)
+                state = next
+                devices.value = emptyList()
+                yield()
+                devices.value = listOf(a)
+            }
+            assertEquals(status, ok(commands.run(CommandCatalog.WATCH_CHECK_FIRMWARE, "force" to "true"))["status"])
         }
-
-        assertEquals("none", ok(commands.run(CommandCatalog.WATCH_CHECK_FIRMWARE, "force" to "true"))["status"])
-        assertEquals(ErrorCode.FIRMWARE_UPDATE_UNAVAILABLE, failure(commands.run(CommandCatalog.WATCH_INSTALL_FIRMWARE)))
     }
 
     @Test fun pressButtonValidatesBeforeSendingAndMapsOutcomes() = runTest {
@@ -165,15 +167,11 @@ class WatchControlCommandsTest {
         assertEquals(ErrorCode.RATE_LIMITED, failure(commands.run(CommandCatalog.WATCH_SYNC_TIME)))
         nowMs = 30 * 60_000L
 
-        coEvery { control.syncTime(a) } returns TimeSyncOutcome.Unverified
-        assertEquals("false", ok(commands.run(CommandCatalog.WATCH_SYNC_TIME))["verified"])
+        coEvery { control.syncTime(a) } returns TimeSyncOutcome.Timeout
+        assertEquals(ErrorCode.TIMEOUT, failure(commands.run(CommandCatalog.WATCH_SYNC_TIME)))
         nowMs += 29_999
         assertEquals(ErrorCode.RATE_LIMITED, failure(commands.run(CommandCatalog.WATCH_SYNC_TIME)))
         nowMs += 1
-
-        coEvery { control.syncTime(a) } returns TimeSyncOutcome.Timeout
-        assertEquals(ErrorCode.TIMEOUT, failure(commands.run(CommandCatalog.WATCH_SYNC_TIME)))
-        nowMs += 30_000
         coEvery { control.syncTime(a) } returns TimeSyncOutcome.Mismatch(9)
         assertEquals(ErrorCode.INTERNAL, failure(commands.run(CommandCatalog.WATCH_SYNC_TIME)))
     }
@@ -265,13 +263,5 @@ class WatchControlCommandsTest {
         verify(exactly = 0) { a.factoryReset() }
         ok(commands.run(CommandCatalog.WATCH_FACTORY_RESET, "confirm_serial" to "SERIAL1"))
         verify(exactly = 1) { a.factoryReset() }
-    }
-
-    @Test fun remoteInputIsNotAdvertisedUntilAvailable() {
-        every { control.remoteInputAvailable } returns false
-        val commands = commands()
-        assertFalse(commands.isAvailable(CommandCatalog.WATCH_PRESS_BUTTON))
-        assertFalse(commands.isAvailable(CommandCatalog.WATCH_SWIPE))
-        assertTrue(commands.isAvailable(CommandCatalog.WATCH_REBOOT))
     }
 }

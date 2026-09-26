@@ -1,9 +1,18 @@
 package coredevices.coreapp.automation.command
 
+import io.rebble.libpebblecommon.automation.RemoteInputButton
+import io.rebble.libpebblecommon.automation.RemoteInputResult
+import io.rebble.libpebblecommon.automation.RemoteInputSwipeDirection
+import io.rebble.libpebblecommon.automation.TimeSyncResult
+import io.rebble.libpebblecommon.automation.WatchPrefSupport
 import io.rebble.libpebblecommon.connection.CommonConnectedDevice
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.packets.ProtocolCapsFlag
-import io.rebble.libpebblecommon.packets.ResetMessage
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.time.Instant
 
 enum class RemoteInputOutcome { OK, BUSY, INVALID, UNSUPPORTED, TIMEOUT }
@@ -12,8 +21,6 @@ sealed interface TimeSyncOutcome {
     data class Verified(val skewSeconds: Long) : TimeSyncOutcome
     data class Mismatch(val skewSeconds: Long) : TimeSyncOutcome
     data object Timeout : TimeSyncOutcome
-    /** Sent, but the watch's clock could not be read back. */
-    data object Unverified : TimeSyncOutcome
 }
 
 enum class PrefSupport(val wire: String) {
@@ -23,12 +30,8 @@ enum class PrefSupport(val wire: String) {
     UNKNOWN("unknown"),
 }
 
-/**
- * Watch operations the bridge needs beyond the plain LibPebble API. Several depend on libpebble3
- * additions that have not landed yet; until they do, the adapter reports them as unavailable/unknown.
- */
+/** Watch operations the bridge needs beyond the plain LibPebble API, behind a seam for testing. */
 interface WatchControl {
-    val remoteInputAvailable: Boolean
     suspend fun reboot(device: ConnectedPebbleDevice)
     suspend fun pressButton(device: ConnectedPebbleDevice, button: Int, presses: Int, holdMs: Int, gapMs: Int): RemoteInputOutcome
     suspend fun swipe(device: ConnectedPebbleDevice, direction: Int, durationMs: Int): RemoteInputOutcome
@@ -41,28 +44,62 @@ interface WatchControl {
 }
 
 class LibPebbleWatchControl : WatchControl {
-    override val remoteInputAvailable: Boolean = false
+    override suspend fun reboot(device: ConnectedPebbleDevice) = device.reset()
 
-    override suspend fun reboot(device: ConnectedPebbleDevice) = device.sendPPMessage(ResetMessage.Reset)
-
-    override suspend fun pressButton(device: ConnectedPebbleDevice, button: Int, presses: Int, holdMs: Int, gapMs: Int) =
-        RemoteInputOutcome.UNSUPPORTED
-
-    override suspend fun swipe(device: ConnectedPebbleDevice, direction: Int, durationMs: Int) =
-        RemoteInputOutcome.UNSUPPORTED
-
-    override suspend fun syncTime(device: ConnectedPebbleDevice): TimeSyncOutcome {
-        device.updateTime()
-        return TimeSyncOutcome.Unverified
+    override suspend fun pressButton(device: ConnectedPebbleDevice, button: Int, presses: Int, holdMs: Int, gapMs: Int): RemoteInputOutcome {
+        val target = RemoteInputButton.entries.firstOrNull { it.id.toInt() == button } ?: return RemoteInputOutcome.INVALID
+        return device.pressButton(target, presses, holdMs, gapMs).toOutcome()
     }
 
-    override fun firmwareCheckedAt(device: CommonConnectedDevice): Instant? = null
+    override suspend fun swipe(device: ConnectedPebbleDevice, direction: Int, durationMs: Int): RemoteInputOutcome {
+        val target = RemoteInputSwipeDirection.entries.firstOrNull { it.id.toInt() == direction } ?: return RemoteInputOutcome.INVALID
+        return device.swipe(target, durationMs).toOutcome()
+    }
 
-    override fun prefSupport(device: CommonConnectedDevice, prefId: String): PrefSupport =
-        if (ProtocolCapsFlag.SupportsBlobDbVersion in device.capabilities) PrefSupport.UNKNOWN else PrefSupport.UNSUPPORTED
+    override suspend fun syncTime(device: ConnectedPebbleDevice): TimeSyncOutcome = when (val result = device.updateTimeVerified()) {
+        is TimeSyncResult.Success -> TimeSyncOutcome.Verified(result.skewSeconds)
+        is TimeSyncResult.Mismatch -> TimeSyncOutcome.Mismatch(result.skewSeconds)
+        TimeSyncResult.Timeout -> TimeSyncOutcome.Timeout
+    }
+
+    override fun firmwareCheckedAt(device: CommonConnectedDevice): Instant? = device.firmwareUpdateAvailable.checkedAt
+
+    override fun prefSupport(device: CommonConnectedDevice, prefId: String): PrefSupport {
+        if (ProtocolCapsFlag.SupportsBlobDbVersion !in device.capabilities) return PrefSupport.UNSUPPORTED
+        val support = device as? WatchPrefSupport ?: return PrefSupport.UNKNOWN
+        return when (prefId) {
+            in support.rejectedWatchPrefs.value -> PrefSupport.UNSUPPORTED
+            in support.acceptedWatchPrefs.value -> PrefSupport.SUPPORTED
+            else -> PrefSupport.UNKNOWN
+        }
+    }
 
     override suspend fun writePrefAndAwait(device: CommonConnectedDevice, prefId: String, timeoutMs: Long, write: () -> Unit): PrefSupport {
-        write()
-        return prefSupport(device, prefId)
+        val support = device as? WatchPrefSupport
+        if (support == null) {
+            write()
+            return prefSupport(device, prefId)
+        }
+        val outcome = coroutineScope {
+            val answer = async(start = CoroutineStart.UNDISPATCHED) {
+                withTimeoutOrNull(timeoutMs) { support.watchPrefSyncOutcomes.first { it.prefId == prefId } }
+            }
+            write()
+            answer.await()
+        }
+        // An unchanged value is never re-sent, so no answer is not a refusal.
+        return when (outcome?.accepted) {
+            true -> PrefSupport.SUPPORTED
+            false -> PrefSupport.UNSUPPORTED
+            null -> prefSupport(device, prefId)
+        }
+    }
+
+    private fun RemoteInputResult.toOutcome(): RemoteInputOutcome = when (this) {
+        RemoteInputResult.Ok -> RemoteInputOutcome.OK
+        RemoteInputResult.Busy -> RemoteInputOutcome.BUSY
+        RemoteInputResult.Invalid -> RemoteInputOutcome.INVALID
+        RemoteInputResult.Unsupported -> RemoteInputOutcome.UNSUPPORTED
+        RemoteInputResult.Timeout -> RemoteInputOutcome.TIMEOUT
     }
 }

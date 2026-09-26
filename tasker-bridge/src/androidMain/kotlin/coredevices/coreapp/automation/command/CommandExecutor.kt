@@ -59,9 +59,6 @@ class CommandExecutor(
 
         val required = CommandCatalog.tierOf(cmd.type)
             ?: return err(ErrorCode.UNSUPPORTED_COMMAND, "unknown command '${cmd.type}'", cmd.idempotencyKey)
-        if (!handler.isAvailable(cmd.type)) {
-            return err(ErrorCode.UNSUPPORTED_COMMAND, "'${cmd.type}' is not available in this app version", cmd.idempotencyKey)
-        }
 
         if (required.rank > grantedTier.rank) {
             return err(ErrorCode.COMMAND_NOT_AUTHORIZED, "command tier '${cmd.type}' exceeds grant", cmd.idempotencyKey)
@@ -99,9 +96,6 @@ class CommandExecutor(
                 err(result.code, result.message, cmd.idempotencyKey)
         }
     }
-
-    /** Whether an allowlisted command can run on this build (advertised as a capability). */
-    fun isAvailable(type: String): Boolean = handler.isAvailable(type)
 
     /** Remove a deleted client's buckets; never call on token replacement/re-handshake. */
     fun clearClientRateLimits(clientIdentity: String) = rateLimiter.removePrefix("$clientIdentity:")
