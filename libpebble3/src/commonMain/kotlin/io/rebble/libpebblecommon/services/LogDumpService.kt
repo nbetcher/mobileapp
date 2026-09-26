@@ -14,6 +14,8 @@ import io.rebble.libpebblecommon.packets.LogDump.ReceivedLogDumpMessage
 import io.rebble.libpebblecommon.util.getTempFilePath
 import io.rebble.libpebblecommon.util.randomCookie
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.onSubscription
 import kotlinx.coroutines.flow.takeWhile
@@ -22,6 +24,7 @@ import kotlinx.datetime.format
 import kotlinx.datetime.format.DateTimeComponents
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
+import kotlin.time.Clock
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
@@ -38,9 +41,16 @@ class LogDumpService(
         this.supportsInfiniteLogDump = supportsInfiniteLogDump
     }
 
-    override suspend fun gatherLogs(): Path? {
+    // BRIDGE-TAP: logdump-serialized
+    // Dump replies are not matched by cookie, so dumps for one watch must not overlap. Each dump gets
+    // its own file so one caller cannot overwrite or delete another's.
+    private val dumpLock = Mutex()
+    private val dumpPrefix = "logs-${identifier.asString}-"
+
+    override suspend fun gatherLogs(): Path? = dumpLock.withLock {
         logger.d { "gatherLogs() supportsInfiniteLogDump=$supportsInfiniteLogDump" }
-        val tempLogFile = getTempFilePath(appContext, "logs-${identifier.asString}")
+        val tempLogFile = getTempFilePath(appContext, dumpPrefix + Clock.System.now().toEpochMilliseconds())
+        pruneOldDumps(tempLogFile)
         SystemFileSystem.sink(tempLogFile).use { sink ->
             sink.asByteWriteChannel().use {
                 writeLine("# Device logs:")
@@ -58,7 +68,15 @@ class LogDumpService(
             }
         }
         logger.d { "gatherLogs done" }
-        return tempLogFile
+        tempLogFile
+    }
+
+    private fun pruneOldDumps(current: Path) {
+        val dir = current.parent ?: return
+        val names = runCatching { SystemFileSystem.list(dir).map { it.name } }.getOrDefault(emptyList())
+        dumpsToPrune(names, dumpPrefix, KEPT_DUMPS - 1).forEach { name ->
+            runCatching { SystemFileSystem.delete(Path(dir, name)) }
+        }
     }
 
     private suspend fun requestLogGeneration(
@@ -143,3 +161,11 @@ enum class LogLevel(val code: UByte, val str: String) {
         fun fromCode(code: UByte): LogLevel = entries.firstOrNull { it.code == code } ?: Unknown
     }
 }
+
+/** Earlier dumps named [prefix]<epoch millis> to delete so that only the newest [keep] remain. */
+internal fun dumpsToPrune(names: List<String>, prefix: String, keep: Int): List<String> =
+    names.filter { it.startsWith(prefix) && it.removePrefix(prefix).toLongOrNull() != null }
+        .sortedBy { it.removePrefix(prefix).toLong() }
+        .dropLast(keep)
+
+private const val KEPT_DUMPS = 3
