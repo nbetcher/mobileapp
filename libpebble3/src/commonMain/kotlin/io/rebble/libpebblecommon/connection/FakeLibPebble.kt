@@ -1,5 +1,8 @@
 package io.rebble.libpebblecommon.connection
 
+import io.rebble.libpebblecommon.automation.RemoteInputButton
+import io.rebble.libpebblecommon.automation.RemoteInput
+import io.rebble.libpebblecommon.automation.RemoteInputSwipeDirection
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toArgb
@@ -625,6 +628,12 @@ class FakeConnectedDevice(
     override fun factoryReset() {}
 
     override fun reset() {}
+
+    override suspend fun pressButton(button: RemoteInputButton, presses: Int, holdMs: Int, gapMs: Int) =
+        RemoteInput.Unavailable.pressButton(button, presses, holdMs, gapMs)
+
+    override suspend fun swipe(direction: RemoteInputSwipeDirection, durationMs: Int) =
+        RemoteInput.Unavailable.swipe(direction, durationMs)
 
     override suspend fun sendPPMessage(bytes: ByteArray) {}
 

@@ -1,5 +1,7 @@
 package io.rebble.libpebblecommon.connection
 
+import io.rebble.libpebblecommon.automation.AutomationWatchServices
+import io.rebble.libpebblecommon.automation.RemoteInput
 import androidx.compose.runtime.Stable
 import androidx.compose.ui.graphics.ImageBitmap
 import io.rebble.libpebblecommon.connection.bt.ble.pebble.PebbleLeScanRecord
@@ -117,7 +119,8 @@ sealed interface ConnectedPebbleDevice :
     ConnectedPebble.CompanionAppControl,
     ConnectedPebble.Screenshot,
     ConnectedPebble.Language,
-    ConnectedPebble.Health
+    ConnectedPebble.Health,
+    RemoteInput
 
 /**
  * Put all specific functionality here, rather than directly in [ConnectedPebbleDevice].
@@ -252,6 +255,7 @@ object ConnectedPebble {
         val screenshot: Screenshot,
         val language: LanguageInstall,
         val health: Health,
+        val automation: AutomationWatchServices? = null,
     )
 
     class PrfServices(

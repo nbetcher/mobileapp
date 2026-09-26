@@ -1,5 +1,7 @@
 package io.rebble.libpebblecommon.di
 
+import io.rebble.libpebblecommon.automation.AutomationWatchServices
+import io.rebble.libpebblecommon.automation.RemoteInputService
 import co.touchlab.kermit.Logger
 import com.russhwolf.settings.Settings
 import io.ktor.client.HttpClient
@@ -521,7 +523,7 @@ fun initKoin(
                             get(), get(), get(),
                             get(), get(), get(),
                             get(), get(), get(), get(), get(),
-                            get(),
+                            get(), get(),
                         )
                     } bind PebbleConnector::class
                     scopedOf(::PebbleProtocolRunner)
@@ -559,6 +561,9 @@ fun initKoin(
                     scopedOf(::AudioStreamService)
                     scopedOf(::AppReorderService)
                     scopedOf(::HealthService)
+                    // BRIDGE-TAP: automation-services
+                    scopedOf(::RemoteInputService)
+                    scopedOf(::AutomationWatchServices)
 
                     // Endpoint Managers
                     scopedOf(::PutBytesSession)

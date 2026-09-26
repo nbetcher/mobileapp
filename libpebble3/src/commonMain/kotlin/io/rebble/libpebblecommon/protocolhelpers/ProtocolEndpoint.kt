@@ -36,6 +36,7 @@ enum class ProtocolEndpoint(val value: UShort) {
     TIMELINE_ACTIONS(11440u),
     VOICE_CONTROL(11000u),
     HEALTH_SYNC(911u),
+    REMOTE_INPUT(61453u /* 0xf00d */),
     INVALID_ENDPOINT(0xffffu);
 
     companion object {

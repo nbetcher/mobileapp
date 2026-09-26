@@ -18,6 +18,7 @@ import io.rebble.libpebblecommon.packets.logDumpPacketsRegister
 import io.rebble.libpebblecommon.packets.musicPacketsRegister
 import io.rebble.libpebblecommon.packets.phoneControlPacketsRegister
 import io.rebble.libpebblecommon.packets.putBytesIncomingPacketsRegister
+import io.rebble.libpebblecommon.packets.remoteInputPacketsRegister
 import io.rebble.libpebblecommon.packets.screenshotPacketsRegister
 import io.rebble.libpebblecommon.packets.systemPacketsRegister
 import io.rebble.libpebblecommon.packets.timePacketsRegister
@@ -55,6 +56,7 @@ object PacketRegistry {
         dataLoggingPacketsRegister()
         getBytesIncomingPacketsRegister()
         healthSyncPacketsRegister()
+        remoteInputPacketsRegister()
     }
 
     /**

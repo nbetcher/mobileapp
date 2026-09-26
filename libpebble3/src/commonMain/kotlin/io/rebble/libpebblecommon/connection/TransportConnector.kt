@@ -1,5 +1,6 @@
 package io.rebble.libpebblecommon.connection
 
+import io.rebble.libpebblecommon.automation.AutomationWatchServices
 import co.touchlab.kermit.Logger
 import io.rebble.libpebblecommon.WatchConfigFlow
 import io.rebble.libpebblecommon.connection.ConnectingPebbleState.Connected
@@ -165,6 +166,7 @@ class RealPebbleConnector(
     private val languagePackInstaller: RealLanguagePackInstaller,
     private val healthService: HealthService,
     private val notificationImageProvider: NotificationImageProvider,
+    private val automationServices: AutomationWatchServices,
 ) : PebbleConnector {
     private val logger = Logger.withTag("PebbleConnector-$identifier")
     private val _state = MutableStateFlow<ConnectingPebbleState>(Inactive(identifier))
@@ -235,6 +237,8 @@ class RealPebbleConnector(
             runningFwVersion = watchInfo.runningFwVersion,
         )
         firmwareUpdateManager.init(watchInfo)
+        // BRIDGE-TAP: automation-services
+        automationServices.init(watchInfo)
         logDumpService.init(watchInfo.capabilities.contains(ProtocolCapsFlag.SupportsInfiniteLogDump))
 
         val ignoreMissingPrfOnThisDevice =
@@ -309,6 +313,7 @@ class RealPebbleConnector(
                 screenshot = screenshotService,
                 language = languagePackInstaller,
                 health = healthService,
+                automation = automationServices,
             ),
             reversePpogVersion = reversePpogVersion,
         )
