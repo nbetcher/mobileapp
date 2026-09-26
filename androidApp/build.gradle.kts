@@ -141,6 +141,9 @@ dependencies {
     androidTestImplementation(project(":libindex"))
     androidTestImplementation(project(":index-ai"))
     androidTestImplementation(project(":mcp"))
+    androidTestImplementation(project(":libpebble3"))
+    androidTestImplementation(project(":tasker-bridge"))
+    androidTestImplementation(libs.compose.ui)
 }
 
 // Resolved at execution time — a configuration-time .get() makes every commit invalidate the
