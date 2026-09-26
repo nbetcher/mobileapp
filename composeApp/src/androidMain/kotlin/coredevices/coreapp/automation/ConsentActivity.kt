@@ -32,6 +32,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -218,9 +219,11 @@ private fun ConsentScreen(consent: ConsentController, settings: AutomationSettin
                         var grant by remember(p.packageName, p.certSha256Hex) { mutableStateOf(DEFAULT_GRANT) }
                         ClientCategoryChoices(grant) { grant = it }
                         if (!master) Text("Approving will also enable the automation bridge.")
-                        TierChoice(tier, extremeAccepted) { selected, accepted ->
-                            tier = selected
-                            extremeAccepted = extremeAccepted || accepted
+                        key(p.packageName, p.certSha256Hex) {
+                            TierChoice(tier, extremeAccepted) { selected, accepted ->
+                                tier = selected
+                                extremeAccepted = extremeAccepted || accepted
+                            }
                         }
                         Spacer(Modifier.height(12.dp))
                         // Approve / Deny carry EQUAL visual weight (both outlined) on purpose: this is a
@@ -253,9 +256,11 @@ private fun ConsentScreen(consent: ConsentController, settings: AutomationSettin
                         var tier by remember(c) { mutableStateOf(c.tier) }
                         var extremeAccepted by remember(c) { mutableStateOf(c.extremeDisclaimerAcceptedAtMs != null) }
                         ClientCategoryChoices(grant) { grant = it }
-                        TierChoice(tier, extremeAccepted) { selected, accepted ->
-                            tier = selected
-                            extremeAccepted = extremeAccepted || accepted
+                        key(c.packageName, c.certSha256) {
+                            TierChoice(tier, extremeAccepted) { selected, accepted ->
+                                tier = selected
+                                extremeAccepted = extremeAccepted || accepted
+                            }
                         }
                         OutlinedButton(onClick = {
                             if (!consent.approve(c.packageName, c.label, c.certSha256, grant, tier, extremeAccepted))

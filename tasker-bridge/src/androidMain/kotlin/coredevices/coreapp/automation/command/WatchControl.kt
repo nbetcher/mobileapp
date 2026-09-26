@@ -26,7 +26,7 @@ enum class PrefSupport(val wire: String) {
 /**
  * Watch operations the bridge needs beyond the plain LibPebble API. Several depend on libpebble3
  * additions specified in `tasker-bridge/docs/libpebble3-handoff.md`; until those land the adapter
- * reports them as unavailable/unknown instead of guessing.
+ * reports them as unavailable/unknown.
  */
 interface WatchControl {
     val remoteInputAvailable: Boolean

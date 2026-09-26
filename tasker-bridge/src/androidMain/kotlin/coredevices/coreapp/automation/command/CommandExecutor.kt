@@ -59,6 +59,9 @@ class CommandExecutor(
 
         val required = CommandCatalog.tierOf(cmd.type)
             ?: return err(ErrorCode.UNSUPPORTED_COMMAND, "unknown command '${cmd.type}'", cmd.idempotencyKey)
+        if (!handler.isAvailable(cmd.type)) {
+            return err(ErrorCode.UNSUPPORTED_COMMAND, "'${cmd.type}' is not available in this app version", cmd.idempotencyKey)
+        }
 
         if (required.rank > grantedTier.rank) {
             return err(ErrorCode.COMMAND_NOT_AUTHORIZED, "command tier '${cmd.type}' exceeds grant", cmd.idempotencyKey)

@@ -40,9 +40,15 @@ val taskerModule = module {
     single { ConsentController(get<Context>(), get()) }
     single<StateProvider> { LibPebbleStateProvider(get(), get<Context>()) }
     single<WatchControl> { LibPebbleWatchControl() }
-    single { AutomationFiles(get<Context>()) }
-    single { AutomationJobs(CoroutineScope(SupervisorJob() + Dispatchers.Default + CoroutineName("AutomationJobs")), get()) }
-    single { WatchControlCommands(get<LibPebble>(), get(), get(), get()) }
+    single { AutomationFiles(get<Context>(), CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineName("AutomationFiles"))) }
+    single { AutomationJobs(CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineName("AutomationJobs")), get()) }
+    single {
+        val trustStore = get<ClientTrustStore>()
+        val settings = get<AutomationSettings>()
+        WatchControlCommands(get<LibPebble>(), get(), get(), get(), canReceiveJobResult = { owner ->
+            trustStore.get(owner)?.categories?.contains("system") == true && settings.isCategoryEnabled("system")
+        })
+    }
     single<CommandHandler> {
         LibPebbleCommandHandler(get<LibPebble>(), get<EventDispatcher>(), control = get(), controlCommands = get())
     }

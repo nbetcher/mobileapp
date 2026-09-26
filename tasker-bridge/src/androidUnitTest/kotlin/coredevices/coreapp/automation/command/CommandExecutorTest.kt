@@ -30,6 +30,12 @@ class CommandExecutorTest {
             assertEquals(0, handler.calls)
         }
     }
+    @Test fun unavailableCommandsAreRefusedBeforeDispatch() = runTest {
+        val handler = FakeHandler(unavailable = setOf(CommandCatalog.WATCH_PRESS_BUTTON))
+        val result = decode(CommandExecutor(handler).execute("t", cmd(CommandCatalog.WATCH_PRESS_BUTTON), CommandTier.DANGEROUS, true))
+        assertEquals(ErrorCode.UNSUPPORTED_COMMAND, result.error?.code)
+        assertEquals(0, handler.calls)
+    }
     @Test fun everyCatalogCommandChecksEveryGrantAndDangerousToggle() = runTest {
         for ((type, required) in CommandCatalog.tiers) for (grant in CommandTier.entries) for (dangerous in listOf(false, true)) {
             val handler = FakeHandler()
@@ -105,11 +111,14 @@ class CommandExecutorTest {
     private class FakeHandler(
         val result: CommandResult = CommandResult.Ok(mapOf("did" to "it")),
         var calls: Int = 0,
+        val unavailable: Set<String> = emptySet(),
     ) : CommandHandler {
         override suspend fun handle(command: CommandEnvelope): CommandResult {
             calls++
             return result
         }
+
+        override fun isAvailable(type: String) = type !in unavailable
     }
 
     private fun cmd(type: String, key: String? = null): String =

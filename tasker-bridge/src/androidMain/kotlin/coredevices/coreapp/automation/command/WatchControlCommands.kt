@@ -30,6 +30,8 @@ class WatchControlCommands(
     private val files: AutomationFiles,
     private val cooldowns: Cooldowns = Cooldowns(),
     private val clock: Clock = Clock.System,
+    /** Whether [owner] would receive its `system`/`job.done` event. */
+    private val canReceiveJobResult: (owner: String) -> Boolean = { true },
 ) {
     private val watches = WatchSelector(libPebble)
     private val json = Json { explicitNulls = false }
@@ -57,9 +59,15 @@ class WatchControlCommands(
 
     private suspend fun reboot(command: CommandEnvelope): CommandResult {
         val device = pebble(command.watch) ?: return watches.noWatch(command.watch)
-        val wait = cooldowns.tryAcquire("reboot:${device.identifier.asString}", REBOOT_COOLDOWN_MS)
+        val key = "reboot:${device.identifier.asString}"
+        val wait = cooldowns.tryAcquire(key, REBOOT_COOLDOWN_MS)
         if (wait > 0) return cooldown(command.type, wait)
-        control.reboot(device)
+        try {
+            control.reboot(device)
+        } catch (e: Exception) {
+            cooldowns.finish(key, 0)
+            throw e
+        }
         return CommandResult.Ok(mapOf("serial" to device.serial, "rebooting" to "true"))
     }
 
@@ -103,6 +111,7 @@ class WatchControlCommands(
     private fun screenshot(command: CommandEnvelope, clientIdentity: String): CommandResult {
         val device = pebble(command.watch) ?: return watches.noWatch(command.watch)
         if (clientIdentity.isBlank()) return noIdentity()
+        if (!canReceiveJobResult(clientIdentity)) return noJobChannel()
         val jobId = jobs.start(command.type, device.identifier.asString, clientIdentity, device.toWatchRef(), SCREENSHOT_TIMEOUT_MS) {
             val image = device.takeScreenshot() ?: error("the watch returned no screenshot")
             val file = files.newFile("screenshots", "png")
@@ -120,14 +129,14 @@ class WatchControlCommands(
         if (wait > 0) return cooldown(command.type, wait)
         val outcome = try {
             control.syncTime(device)
-        } finally {
+        } catch (e: Exception) {
             cooldowns.finish(key, TIME_RETRY_COOLDOWN_MS)
+            throw e
         }
+        cooldowns.finish(key, if (outcome is TimeSyncOutcome.Verified) TIME_SUCCESS_COOLDOWN_MS else TIME_RETRY_COOLDOWN_MS)
         return when (outcome) {
-            is TimeSyncOutcome.Verified -> {
-                cooldowns.finish(key, TIME_SUCCESS_COOLDOWN_MS)
+            is TimeSyncOutcome.Verified ->
                 CommandResult.Ok(mapOf("serial" to device.serial, "verified" to "true", "skew_s" to outcome.skewSeconds.toString()))
-            }
             TimeSyncOutcome.Unverified -> CommandResult.Ok(mapOf("serial" to device.serial, "verified" to "false"))
             is TimeSyncOutcome.Mismatch -> CommandResult.Failure(ErrorCode.INTERNAL, "the watch clock is still ${outcome.skewSeconds}s off")
             TimeSyncOutcome.Timeout -> CommandResult.Failure(ErrorCode.TIMEOUT, "the watch did not report its time back")
@@ -135,14 +144,17 @@ class WatchControlCommands(
     }
 
     private suspend fun checkFirmware(command: CommandEnvelope): CommandResult {
-        val force = when (command.args["force"]?.let(CommandArgs::normalizeBool)) {
+        val force = when (command.args["force"]?.takeIf { it.isNotBlank() }?.let(CommandArgs::normalizeBool)) {
             null, "0" -> false
             "1" -> true
             else -> return invalid("invalid 'force'")
         }
         val device = watches.connected(command.watch) ?: return watches.noWatch(command.watch)
+        val known = device.firmwareUpdateAvailable
         device.checkforFirmwareUpdate(force)
-        val result = withTimeoutOrNull(FIRMWARE_CHECK_WAIT_MS) {
+        // An unforced check is answered from cache without a visible checking state, so report what is known.
+        val result = if (!force && !known.checkingForUpdates && known.result != null) known.result
+        else withTimeoutOrNull(FIRMWARE_CHECK_WAIT_MS) {
             var sawChecking = false
             libPebble.watches.map { list ->
                 (list.firstOrNull { it.identifier == device.identifier } as? CommonConnectedDevice)?.firmwareUpdateAvailable
@@ -220,6 +232,7 @@ class WatchControlCommands(
     private fun gatherLogs(command: CommandEnvelope, clientIdentity: String): CommandResult {
         val device = watches.connected(command.watch) ?: return watches.noWatch(command.watch)
         if (clientIdentity.isBlank()) return noIdentity()
+        if (!canReceiveJobResult(clientIdentity)) return noJobChannel()
         val jobId = jobs.start(command.type, device.identifier.asString, clientIdentity, device.toWatchRef(), LOGS_TIMEOUT_MS) {
             val dump = File(device.gatherLogs()?.toString() ?: error("the watch returned no logs"))
             val file = files.newFile("logs", "txt")
@@ -243,6 +256,9 @@ class WatchControlCommands(
     private fun invalid(message: String) = CommandResult.Failure(ErrorCode.INVALID_ARGS, message)
 
     private fun noIdentity() = CommandResult.Failure(ErrorCode.NOT_AUTHORIZED, "missing verified client identity")
+
+    private fun noJobChannel() =
+        CommandResult.Failure(ErrorCode.CATEGORY_DISABLED, "the result arrives as a system/job.done event; the 'system' category must be granted and enabled")
 
     private fun cooldown(type: String, waitMs: Long) =
         CommandResult.Failure(ErrorCode.RATE_LIMITED, "'$type' is cooling down for this watch; retry in ${(waitMs + 999) / 1000}s")

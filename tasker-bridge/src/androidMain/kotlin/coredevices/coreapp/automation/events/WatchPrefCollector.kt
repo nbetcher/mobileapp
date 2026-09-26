@@ -17,6 +17,7 @@ class WatchPrefCollector(
 ) {
     fun start(scope: CoroutineScope) {
         scope.launch {
+            val labels = PrefListing.listable().associate { it.id to it.displayName }
             var previous: Map<String, String>? = null
             libPebble.watchPrefs
                 .map { prefs -> prefs.filterNot { it.pref.isDebugSetting }.associate { it.pref.id to PrefListing.encodedValue(it) } }
@@ -28,10 +29,10 @@ class WatchPrefCollector(
                     for ((key, value) in current) {
                         val old = before[key]
                         if (old == value) continue
-                        val pref = PrefListing.listable().firstOrNull { it.id == key } ?: continue
+                        val label = labels[key] ?: continue
                         dispatcher.emit("system", "watch.pref", data = buildMap {
                             put("pref_key", key)
-                            put("label", pref.displayName)
+                            put("label", label)
                             put("value", value)
                             old?.let { put("previous", it) }
                         })

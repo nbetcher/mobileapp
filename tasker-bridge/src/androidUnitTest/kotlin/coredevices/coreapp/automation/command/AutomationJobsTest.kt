@@ -2,6 +2,7 @@ package coredevices.coreapp.automation.command
 
 import coredevices.coreapp.automation.events.EventAccessPolicy
 import coredevices.coreapp.automation.events.EventDispatcher
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.advanceTimeBy
@@ -47,6 +48,16 @@ class AutomationJobsTest {
         assertEquals("no logs", events[failed]?.data?.get("error"))
         assertEquals("timed out", events[slow]?.data?.get("error"))
         assertNotNull(jobs.start("watch.gatherLogs", "A", "pkg", null, 1_000) { emptyMap() })
+    }
+
+    @Test fun cancellationFromTheWatchConnectionStillReportsTheJob() = runTest {
+        val dispatcher = EventDispatcher("boot")
+        val jobs = AutomationJobs(backgroundScope, dispatcher)
+        val id = jobs.start("watch.screenshot", "A", "pkg", null, 60_000) { throw CancellationException("disconnected") }
+        runCurrent()
+        val event = dispatcher.snapshot(0).events.single { it.data["job_id"] == id }
+        assertEquals("failed", event.data["status"])
+        assertNotNull(jobs.start("watch.screenshot", "A", "pkg", null, 60_000) { emptyMap() })
     }
 
     @Test fun ordinaryEventsStillReachEveryPermittedClient() {

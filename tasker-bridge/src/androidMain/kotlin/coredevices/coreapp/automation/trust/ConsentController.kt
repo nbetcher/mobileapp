@@ -50,7 +50,7 @@ class ConsentController(
         }
         val now = Clock.System.now().toEpochMilliseconds()
         val acceptedAt = trustStore.get(pkg)?.takeIf { it.certSha256 == current }?.extremeDisclaimerAcceptedAtMs
-            ?: now.takeIf { extremeDisclaimerAccepted }
+            ?: now.takeIf { extremeDisclaimerAccepted && tier == CommandTier.GRANT_EXTREMELY_DANGEROUS }
         require(tier != CommandTier.GRANT_EXTREMELY_DANGEROUS || acceptedAt != null) {
             "the extremely dangerous tier needs the accepted disclaimer"
         }

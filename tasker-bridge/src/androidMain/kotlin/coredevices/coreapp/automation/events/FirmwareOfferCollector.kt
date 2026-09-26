@@ -23,13 +23,14 @@ class FirmwareOfferCollector(
                     when (val result = device.firmwareUpdateAvailable.result) {
                         is FirmwareUpdateCheckResult.FoundUpdate -> {
                             val version = result.version.stringVersion
-                            if (announced.put(id, version) == version) continue
-                            dispatcher.emit("system", "fw.available", device.toWatchRef(), mapOf(
+                            if (announced[id] == version) continue
+                            val emitted = dispatcher.emit("system", "fw.available", device.toWatchRef(), mapOf(
                                 "version" to version,
                                 "current" to device.runningFwVersion,
                                 "can_downgrade" to result.canDowngrade.toString(),
                                 "notes" to result.notes.take(MAX_NOTES),
                             ))
+                            if (emitted) announced[id] = version
                         }
                         FirmwareUpdateCheckResult.FoundNoUpdate -> announced.remove(id)
                         is FirmwareUpdateCheckResult.UpdateCheckFailed, null -> Unit

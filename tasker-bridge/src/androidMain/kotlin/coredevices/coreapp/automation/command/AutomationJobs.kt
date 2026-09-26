@@ -7,6 +7,7 @@ import coredevices.coreapp.automation.events.WatchRef
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlin.uuid.Uuid
@@ -38,7 +39,9 @@ class AutomationJobs(private val scope: CoroutineScope, private val dispatcher: 
             } catch (e: TimeoutCancellationException) {
                 mapOf("status" to "failed", "error" to "timed out")
             } catch (e: CancellationException) {
-                throw e
+                // libpebble3 work runs in the connection's scope, which is cancelled on disconnect.
+                ensureActive()
+                mapOf("status" to "failed", "error" to "cancelled")
             } catch (e: Exception) {
                 logger.w(e) { "$command job failed" }
                 mapOf("status" to "failed", "error" to (e.message ?: "failed"))

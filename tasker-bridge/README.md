@@ -6,7 +6,7 @@ These notes describe the September 2026 implementation changes. The protocol rem
 
 `COMMAND_NOT_AUTHORIZED` rejects one command because its tier exceeds the grant or the dangerous-command toggle is off. It does not revoke a healthy event listener. `NOT_AUTHORIZED` still denotes invalid session/access and requires fresh readiness. The plugin maps both to its existing Tasker authorization error code, while preserving the wire code to distinguish their recovery behavior.
 
-Only the persisted `normal`, `sensitive`, and `dangerous` grants authorize commands; unknown values fail closed. The service revalidates the caller/session when command execution starts, and the plugin revalidates queued IPC before calling the host. A command already handed to the backend can still complete after a later revocation or timeout.
+Only the persisted `normal`, `sensitive`, `dangerous` and `extremely_dangerous` grants authorize commands; unknown values fail closed. The service revalidates the caller/session when command execution starts, and the plugin revalidates queued IPC before calling the host. A command already handed to the backend can still complete after a later revocation or timeout.
 
 A server `TIMEOUT` means command completion is unknown; it does not by itself invalidate an otherwise healthy session. Do not automatically retry non-idempotent actions. Server commands have a cooperative 6-second deadline. The plugin bounds IPC at 8 seconds, readiness at 12 seconds, and the combined action at 25 seconds. Condition readiness and state IPC each use at most 4 seconds and share the remaining eight-second query budget, including queue waiting.
 
@@ -49,7 +49,7 @@ The plugin serializes both Tasker query entry paths through result handoff using
 
 ## Watch control, preferences and diagnostics
 
-New commands are additive and advertised as `command.<type>` only when this build can run them (`watch.pressButton` and `watch.swipe` stay unadvertised until libpebble3 gains remote input; see `docs/libpebble3-handoff.md`). All accept the usual `watch` selector.
+New commands are additive and advertised as `command.<type>` only when this build can run them (`watch.pressButton` and `watch.swipe` stay unadvertised, and fail with `UNSUPPORTED_COMMAND`, until libpebble3 gains remote input; see `docs/libpebble3-handoff.md`). All accept the usual `watch` selector.
 
 | Command | Tier | Args | Result |
 |---|---|---|---|
@@ -57,7 +57,7 @@ New commands are additive and advertised as `command.<type>` only when this buil
 | `watch.getPref` | normal | `pref_key` | flat `pref_key,label,description?,type,value,default,support,options?,min?,max?,unit?` |
 | `watch.stopApp` | normal | `uuid` (default: running app) | `uuid` |
 | `watch.syncTime` | normal | — | `verified`, `skew_s?` |
-| `watch.checkFirmware` | normal | `force` | `status` = `available`\|`none`\|`failed`\|`pending`, `version?` |
+| `watch.checkFirmware` | normal | `force` (without it, the last known result is returned at once) | `status` = `available`\|`none`\|`failed`\|`pending`, `version?` |
 | `watch.screenshot` | sensitive | — | `job_id` |
 | `watch.reboot` | dangerous | — | `rebooting` |
 | `watch.pressButton` | dangerous | `button` (back/up/select/down), `presses` 1-255 (1), `hold_ms` 0-65535 (50), `gap_ms` 0-65535 (100) | `accepted` |
@@ -70,6 +70,6 @@ New commands are additive and advertised as `command.<type>` only when this buil
 - **Cooldowns** apply per watch across all clients and return `RATE_LIMITED` with the remaining seconds: reboot 60 s; time sync 30 min after a verified sync, otherwise 30 s. Until libpebble3 can read the watch clock back, every sync is `verified=false`.
 - **Remote input** is acknowledged when the watch admits the sequence, not when it finishes. `WATCH_BUSY` means another injected sequence is still running. A timed long press (`hold_ms`) is released by the watch itself; holding a button indefinitely is deliberately not offered.
 - **Firmware install** refuses with `FIRMWARE_UPDATE_UNAVAILABLE` when a check within the last 24 h found nothing, and `FIRMWARE_CHECK_STALE` when no successful check is known within 24 h. Until libpebble3 records check times, every refusal is `FIRMWARE_CHECK_STALE`. `WATCH_BUSY` means an update is already running.
-- **Jobs.** Screenshots and log dumps outlast the IPC deadline. The command returns a `job_id`; the result arrives as a `system`/`job.done` event with `job_id`, `command`, `status` (`ok`/`failed`), `error?`, and on success `uri`, `mime` and (screenshots) `width`/`height`. The event carries `owner` and reaches only that package (`events.owner_targeted`), so the client needs the `system` category. The `content://` URI is readable only by the requesting package and is deleted after one hour.
+- **Jobs.** Screenshots and log dumps outlast the IPC deadline. The command returns a `job_id`; the result arrives as a `system`/`job.done` event with `job_id`, `command`, `status` (`ok`/`failed`), `error?`, and on success `uri`, `mime` and (screenshots) `width`/`height`. The event carries `owner` and reaches only that package (`events.owner_targeted`), so the client needs the `system` category; without it, or with `system` disabled in the app, the command fails with `CATEGORY_DISABLED`. The `content://` URI is readable only by the requesting package and is deleted after one hour.
 - **Events.** `system`/`watch.pref` (`pref_key`, `label`, `value`, `previous?`) fires on any preference change, including changes made on the watch; preferences are phone-global, so it has no watch. `system`/`fw.available` (`version`, `current`, `can_downgrade`, `notes` ≤ 2000 chars) fires once per watch and offered version.
 - **Extremely dangerous tier** (`extremely_dangerous`, `commands.extremely_dangerous`). Granting it shows a one-time, per-client warning whose Accept button unlocks after 10 s of the dialog being in focus. Acceptance is kept for that package and signing certificate until the client is revoked. The app-wide dangerous-commands toggle must also be on. A grant without a recorded acceptance acts as `dangerous`. `BridgeHello.grants.tier` can now read `extremely_dangerous`; plugins that do not know it should treat it as `dangerous`.

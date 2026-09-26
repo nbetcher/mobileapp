@@ -55,7 +55,8 @@ internal fun ExtremeDisclaimerDialog(onAccept: () -> Unit, onCancel: () -> Unit)
                 remaining--
             }
         }
-        val view = LocalView.current
+        // AndroidComposeView never consults the flag, so it goes on the dialog window's root ViewGroup.
+        val view = LocalView.current.rootView
         DisposableEffect(view) {
             val previous = view.filterTouchesWhenObscured
             view.filterTouchesWhenObscured = true

@@ -41,12 +41,14 @@ class WatchControlCommandsTest {
         every { firmwareUpdateState } returns status
     }
 
+    private var receivesJobs = true
+
     private fun commands(vararg watches: PebbleDevice, prefs: List<WatchPreference<*>> = emptyList()): WatchControlCommands {
         val lp = mockk<LibPebble>(relaxed = true) {
             every { this@mockk.watches } returns MutableStateFlow(watches.toList())
             every { watchPrefs } returns flowOf(prefs)
         }
-        return WatchControlCommands(lp, control, jobs, files, Cooldowns { nowMs }, clock)
+        return WatchControlCommands(lp, control, jobs, files, Cooldowns { nowMs }, clock) { receivesJobs }
     }
 
     private suspend fun WatchControlCommands.run(type: String, vararg args: Pair<String, String>, identity: String = "pkg") =
@@ -71,6 +73,24 @@ class WatchControlCommandsTest {
         ok(commands.handle(CommandEnvelope(type = CommandCatalog.WATCH_REBOOT, watch = "A"), "pkg"))
         coVerify(exactly = 2) { control.reboot(a) }
         coVerify(exactly = 1) { control.reboot(b) }
+    }
+
+    @Test fun aFailedRebootDoesNotStartTheCooldown() = runTest {
+        val a = watch("A")
+        val commands = commands(a)
+        coEvery { control.reboot(a) } throws IllegalStateException("closed")
+        assertFailsWith<IllegalStateException> { commands.run(CommandCatalog.WATCH_REBOOT) }
+        coEvery { control.reboot(a) } just Runs
+        ok(commands.run(CommandCatalog.WATCH_REBOOT))
+    }
+
+    @Test fun unforcedFirmwareCheckReportsTheKnownResultAtOnce() = runTest {
+        val a = watch("A", update("v4.38.2"))
+        val commands = commands(a)
+        val result = ok(commands.run(CommandCatalog.WATCH_CHECK_FIRMWARE, "force" to ""))
+        assertEquals("available", result["status"])
+        assertEquals("v4.38.2", result["version"])
+        verify { a.checkforFirmwareUpdate(false) }
     }
 
     @Test fun pressButtonValidatesBeforeSendingAndMapsOutcomes() = runTest {
@@ -187,6 +207,16 @@ class WatchControlCommandsTest {
             every { jobs.start(type, "address-A", "pkg", any(), any(), any()) } returns null
             assertEquals(ErrorCode.WATCH_BUSY, failure(commands.run(type)))
         }
+    }
+
+    @Test fun artifactCommandsRefuseClientsThatCannotReceiveTheResult() = runTest {
+        val a = watch()
+        val commands = commands(a)
+        receivesJobs = false
+        for (type in listOf(CommandCatalog.WATCH_SCREENSHOT, CommandCatalog.WATCH_GATHER_LOGS)) {
+            assertEquals(ErrorCode.CATEGORY_DISABLED, failure(commands.run(type)))
+        }
+        verify(exactly = 0) { jobs.start(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test fun stopAppDefaultsToTheRunningApp() = runTest {

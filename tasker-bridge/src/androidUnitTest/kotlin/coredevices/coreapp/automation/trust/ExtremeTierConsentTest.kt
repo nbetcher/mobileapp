@@ -35,6 +35,13 @@ class ExtremeTierConsentTest {
         assertNull(store.get("plugin"))
     }
 
+    @Test fun acceptanceIsNotKeptWhenTheExtremeTierIsNotGranted() {
+        val store = ClientTrustStore(context)
+        val controller = ConsentController(context, store, Inspector())
+        assertTrue(controller.approve("plugin", "Plugin", "0102", setOf("system"), "normal", true))
+        assertNull(store.get("plugin")!!.extremeDisclaimerAcceptedAtMs)
+    }
+
     @Test fun acceptanceIsAskedOncePerClientIdentity() {
         val store = ClientTrustStore(context)
         val inspector = Inspector()
