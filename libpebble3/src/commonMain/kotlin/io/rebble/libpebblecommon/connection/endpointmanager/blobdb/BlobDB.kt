@@ -211,7 +211,8 @@ class BlobDB(
                 }
             }
 
-            if (unfaithful || !deviceHasPreviouslySyncedSettings) {
+            // BRIDGE-TAP: watchpref-support (the needsFullSync term and the mark below)
+            if (unfaithful || !deviceHasPreviouslySyncedSettings || prefSupport.needsFullSync()) {
                 if (blobDbVersion >= 1) {
                     // Request a full sync of watch prefs
                     val dirtyResponse = blobDBService.send(
@@ -221,6 +222,7 @@ class BlobDB(
                         )
                     )
                     logger.v { "Marked all dirty for watch prefs: $dirtyResponse" }
+                    if (dirtyResponse.status.get() == BlobResponse.BlobStatus.Success.value) prefSupport.markFullSyncRequested()
                 }
             }
 

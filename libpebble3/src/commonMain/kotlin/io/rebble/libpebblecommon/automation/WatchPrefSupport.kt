@@ -43,9 +43,11 @@ private data class StoredPrefSupport(
     val firmware: String,
     val accepted: Set<String>,
     val rejected: Set<String>,
+    /** Firmware under which the watch was last asked to send every setting it supports. */
+    val fullSyncFirmware: String,
 ) {
     companion object {
-        val EMPTY = StoredPrefSupport("", emptySet(), emptySet())
+        val EMPTY = StoredPrefSupport("", emptySet(), emptySet(), "")
     }
 }
 
@@ -72,6 +74,17 @@ class WatchPrefSupportTracker(
             .onFailure { logger.w(it) { "could not load pref support" } }
             .getOrDefault(StoredPrefSupport.EMPTY)
         mutate { if (saved.firmware == runningFirmware) saved else saved.copy(firmware = runningFirmware, rejected = emptySet()) }
+    }
+
+    /**
+     * Ongoing settings sync only carries changed keys, so a watch set up before this tracker existed
+     * would never report its unchanged ones. A full sync once per firmware version fills them in; it
+     * changes no values, since each side keeps the newer copy.
+     */
+    fun needsFullSync(): Boolean = state.value.let { it.firmware.isNotEmpty() && it.fullSyncFirmware != it.firmware }
+
+    fun markFullSyncRequested() {
+        mutate { it.copy(fullSyncFirmware = it.firmware) }
     }
 
     /** The watch wrote this key to the phone, so it is on the watch's allowlist. */

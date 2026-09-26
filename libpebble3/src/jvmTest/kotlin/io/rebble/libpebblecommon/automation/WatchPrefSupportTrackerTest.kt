@@ -69,4 +69,15 @@ class WatchPrefSupportTrackerTest {
             assertTrue(rejectedWatchPrefs.value.isEmpty())
         }
     }
+
+    @Test fun fullSyncIsRequestedOncePerFirmwareVersion() {
+        assertFalse(WatchPrefSupportTracker("AA:BB".asPebbleBleIdentifier(), settings).needsFullSync())
+        tracker().apply {
+            assertTrue(needsFullSync())
+            markFullSyncRequested()
+            assertFalse(needsFullSync())
+        }
+        assertFalse(tracker().needsFullSync())
+        assertTrue(tracker(fw = "v4.39.0").needsFullSync())
+    }
 }
