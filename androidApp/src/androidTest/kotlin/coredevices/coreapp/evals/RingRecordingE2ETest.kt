@@ -614,6 +614,7 @@ class RingRecordingE2ETest {
                     serial: String,
                     voltageMilliV: Int
                 ) {}
+                override suspend fun signOut() {}
 
                 override fun init() {}
             }
