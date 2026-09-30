@@ -2,7 +2,6 @@ package io.rebble.libpebblecommon.plugin
 
 import co.touchlab.kermit.Logger
 import io.ktor.client.HttpClient
-import io.ktor.http.encodeURLPathPart
 import io.rebble.libpebblecommon.connection.AppContext
 import io.rebble.libpebblecommon.js.HttpInterceptorManager
 import io.rebble.libpebblecommon.js.JsEngine
@@ -10,7 +9,8 @@ import io.rebble.libpebblecommon.js.JsEngineInterface
 import io.rebble.libpebblecommon.js.JsEngineLocalStorage
 import io.rebble.libpebblecommon.js.XMLHTTPRequestManager
 import io.rebble.libpebblecommon.js.BASE64_JS
-import io.rebble.libpebblecommon.js.XML_HTTP_REQUEST_JS
+import io.rebble.libpebblecommon.js.FETCH_JS
+import io.rebble.libpebblecommon.js.FETCH_REGISTRY
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -30,6 +30,8 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
 
@@ -38,26 +40,23 @@ import kotlin.uuid.Uuid
  * are one-shot. Sessions are cold-started per request and torn down immediately.
  */
 class JsPlugin(
+    override val pluginUuid: Uuid,
+    override val name: String,
     private val manifest: PluginManifest,
-    private val script: String,
+    /** Read lazily at session start, so bundled/sideloaded scripts aren't all loaded up front. */
+    private val script: suspend () -> String,
     private val appContext: AppContext,
     private val scope: CoroutineScope,
     private val httpClient: HttpClient,
     private val httpInterceptorManager: HttpInterceptorManager,
-    /** Bundled config page HTML, when the manifest names one. */
-    private val configPageHtml: String? = null,
+    /** Host-side hosted OAuth, when available. Only reachable by plugins that declare a connector. */
+    private val oauthApi: PluginOAuthApi? = null,
 ) : Plugin, ConfigMessageTarget {
 
-    override val pluginUuid: Uuid = Uuid.parse(manifest.uuid)
-    override val name: String = manifest.name
     override val sources: List<SourceDeclaration> = manifest.sources
-    override val configPageUrl: String? = manifest.configPage?.let { page ->
-        if (page.startsWith("http://") || page.startsWith("https://")) page
-        else configPageHtml?.let { "data:text/html;charset=utf-8,${it.encodeURLPathPart()}" }
-    }
     override val actions: List<ActionDeclaration> = manifest.actions
 
-    private val logger = Logger.withTag("JsPlugin-${manifest.name}")
+    private val logger = Logger.withTag("JsPlugin-$name")
     private val lenientJson = Json { ignoreUnknownKeys = true }
     private val pending = mutableMapOf<Int, CompletableDeferred<String>>()
 
@@ -123,7 +122,7 @@ class JsPlugin(
             null
         } else {
             SourceEnvelope(
-                pluginUuid = manifest.uuid,
+                pluginUuid = pluginUuid.toString(),
                 validUntilMs = parsed.validUntilMs,
                 instances = parsed.instances,
             )
@@ -147,17 +146,23 @@ class JsPlugin(
         }
     }
 
-    private suspend fun awaitReply(send: suspend (Int) -> Unit): String? {
+    private suspend fun awaitReply(timeout: Duration = REQUEST_TIMEOUT, send: suspend (Int) -> Unit): String? {
         val deferred = CompletableDeferred<String>()
         val id = nextRequestId++
         pending[id] = deferred
         return try {
             send(id)
-            withTimeoutOrNull(REQUEST_TIMEOUT) { deferred.await() }
+            withTimeoutOrNull(timeout) { deferred.await() }
         } finally {
             pending.remove(id)
         }
     }
+
+    /** Derived once: the manifest is fixed for the life of the plugin. */
+    private val networkPolicy = PluginNetworkPolicy(manifest.usesPermissions)
+
+    /** Wired only when the plugin declares an `oauth` connector and the host has an OAuth API. */
+    private val oauth = oauthApi?.takeIf { manifest.oauth.isNotEmpty() }
 
     private fun newSession(): Session {
         // XHR drives the JS side by evaluating statements that must land in order — readyState
@@ -169,22 +174,29 @@ class JsPlugin(
             httpInterceptorManager = httpInterceptorManager,
             appUuid = pluginUuid,
             client = httpClient,
+            networkPolicy = networkPolicy,
+            jsTarget = FETCH_REGISTRY,
         )
         // Same settings scope PKJS uses for this uuid, so a pbw's plugin and its watchapp JS
         // share one set of stored values.
         val localStorage = JsEngineLocalStorage(
-            scopedSettingsUuid = manifest.uuid,
+            scopedSettingsUuid = pluginUuid.toString(),
             appContext = appContext,
             eval = { js -> evals.trySend(js) },
         )
-        val engine = JsEngine(appContext, scope, manifest.name, listOf(Bridge(), xhr, localStorage))
-        return Session(engine, xhr, localStorage, evals, scope.launch { for (js in evals) engine.eval(js) })
+        val oauthBridge = oauth?.let {
+            PluginOAuthJsBridge(scope, { js -> evals.trySend(js) }, pluginUuid.toString(), manifest.oauth.keys, it)
+        }
+        val interfaces = listOfNotNull(Bridge(), xhr, localStorage, oauthBridge)
+        val engine = JsEngine(appContext, scope, name, interfaces)
+        return Session(engine, xhr, localStorage, oauthBridge, evals, scope.launch { for (js in evals) engine.eval(js) })
     }
 
     private inner class Session(
         val engine: JsEngine,
         private val xhr: XMLHTTPRequestManager,
         private val localStorage: JsEngineLocalStorage,
+        private val oauthBridge: PluginOAuthJsBridge?,
         private val evals: Channel<String>,
         private val pump: Job,
     ) {
@@ -192,15 +204,17 @@ class JsPlugin(
             engine.start()
             engine.eval(localStorage.installJs)
             engine.eval(BASE64_JS)
-            engine.eval(XML_HTTP_REQUEST_JS)
+            engine.eval(FETCH_JS)
             engine.eval(PLUGIN_HOST_JS)
-            engine.eval(script)
+            oauthBridge?.let { engine.eval(PluginOAuthJsBridge.INSTALL_JS) }
+            engine.eval(script())
         }
 
         suspend fun stop() {
             evals.close()
             pump.cancel()
             xhr.close()
+            oauthBridge?.close()
             engine.stop()
         }
     }
@@ -242,7 +256,7 @@ class JsPlugin(
     override suspend fun onConfigMessage(json: String): String? = configLock.withLock {
         val session = openConfigSessionLocked() ?: return@withLock null
         try {
-            awaitReply { id -> session.engine.eval("globalThis.__pluginConfigMessage($id, $json)") }
+            awaitReply(CONFIG_REQUEST_TIMEOUT) { id -> session.engine.eval("globalThis.__pluginConfigMessage($id, $json)") }
         } catch (e: Exception) {
             logger.w(e) { "config message failed" }
             null
@@ -288,5 +302,9 @@ class JsPlugin(
 
     private companion object {
         val REQUEST_TIMEOUT = 20.seconds
+
+        // An interactive OAuth sign-in (browser round-trip) outlasts a data-read timeout; the UI
+        // closes the config session anyway, so this only bounds a wedged plugin.
+        val CONFIG_REQUEST_TIMEOUT = 5.minutes
     }
 }

@@ -450,6 +450,7 @@ fun IndexSettings(coreNav: CoreNav) {
                         )
                     },
                     onRequireSignIn = { showSignInDialog = true },
+                    onShowModelDownload = { coreNav.navigateTo(CommonRoutes.SpeechModelDownloadDialog) },
                 )
             }
             item {
@@ -529,6 +530,23 @@ fun IndexSettings(coreNav: CoreNav) {
                         showDiagnosticsDialog = true
                     },
                 )
+            }
+
+            if (debugDetailsEnabled || platform.isSecondaryProfile) {
+                item {
+                    SettingsRow(
+                        title = "Disable Bluetooth Sync",
+                        subtitle = "Turn on if Pebble is also installed on another profile of this phone. Index can't sync when two profiles connect to the ring at once.",
+                        onClick = {
+                            coreConfigHolder.update(coreConfig.copy(disableRingBluetoothSync = !coreConfig.disableRingBluetoothSync))
+                        },
+                    ) {
+                        Switch(
+                            checked = coreConfig.disableRingBluetoothSync,
+                            onCheckedChange = { coreConfigHolder.update(coreConfig.copy(disableRingBluetoothSync = it)) }
+                        )
+                    }
+                }
             }
 
             // --- Debug section ---

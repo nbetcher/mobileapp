@@ -30,7 +30,7 @@ private class FakePlugin(
     override val name: String,
     override val sources: List<SourceDeclaration> = emptyList(),
     override val actions: List<ActionDeclaration> = emptyList(),
-) : Plugin {
+) : NativePlugin {
     override fun observe(
         category: String,
         item: String,
@@ -257,10 +257,12 @@ class PluginManifestTest {
             PluginManifest.serializer(),
             """
             {
-              "uuid": "6f9c1a44-3d1e-4b8a-9c2f-0d5e7a1b3c40",
-              "name": "Hue",
               "description": "lights",
               "script": "plugin.js",
+              "usesPermissions": [
+                "LocalNetwork",
+                {"name": "Internet", "parameters": {"domains": ["discovery.meethue.com"]}}
+              ],
               "sources": [
                 {
                   "category": "home",
@@ -270,10 +272,6 @@ class PluginManifestTest {
                     "on": ["boolean", "shortText"]
                   },
                   "supportsMultiple": true,
-                  "usesPermissions": [
-                    "LocalNetwork",
-                    {"name": "Internet", "parameters": {"domains": ["discovery.meethue.com"]}}
-                  ],
                   "callerPermissions": ["HomeControl"],
                   "suggestedRefreshIntervalSec": 30
                 }
@@ -298,7 +296,6 @@ class PluginManifestTest {
             """.trimIndent(),
         )
 
-        assertEquals("Hue", manifest.name)
         assertEquals(1, manifest.sources.size)
         assertEquals(30, manifest.sources[0].suggestedRefreshIntervalSec)
         assertTrue(manifest.sources[0].supportsMultiple)
@@ -313,7 +310,7 @@ class PluginManifestTest {
                     mapOf("domains" to listOf("discovery.meethue.com")),
                 ),
             ),
-            manifest.sources[0].usesPermissions,
+            manifest.usesPermissions,
         )
         assertEquals(
             listOf(PluginPermission("HomeControl")),
@@ -328,13 +325,13 @@ class PluginManifestTest {
     }
 
     @Test
-    fun aSourceNeedsNoPermissionsAtAll() {
+    fun aPluginNeedsNoPermissionsAtAll() {
         val manifest = Json.decodeFromString(
             PluginManifest.serializer(),
-            """{"uuid":"$UUID_A","name":"Stocks","sources":[{"category":"finance",
+            """{"sources":[{"category":"finance",
                "items":["stock"],"properties":{"price":["shortText"]}}]}""",
         )
-        assertTrue(manifest.sources[0].usesPermissions.isEmpty())
+        assertTrue(manifest.usesPermissions.isEmpty())
         assertTrue(manifest.sources[0].callerPermissions.isEmpty())
     }
 
@@ -342,7 +339,7 @@ class PluginManifestTest {
     fun defaultsFillInForAMinimalManifest() {
         val manifest = Json.decodeFromString(
             PluginManifest.serializer(),
-            """{"uuid":"$UUID_A","name":"Minimal"}""",
+            """{}""",
         )
         assertEquals("plugin.js", manifest.script)
         assertTrue(manifest.sources.isEmpty())

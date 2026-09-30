@@ -54,9 +54,12 @@ import io.rebble.libpebblecommon.notification.NotificationListenerConnection
 import io.rebble.libpebblecommon.notification.VibePattern
 import io.rebble.libpebblecommon.packets.ProtocolCapsFlag
 import io.rebble.libpebblecommon.performPlatformSpecificInit
-import io.rebble.libpebblecommon.plugin.BundledPluginLoader
+import io.rebble.libpebblecommon.plugin.BundledAppInstaller
+import io.rebble.libpebblecommon.plugin.LockerPluginLoader
 import io.rebble.libpebblecommon.plugin.ConfigMessageTarget
+import io.rebble.libpebblecommon.plugin.NativePlugin
 import io.rebble.libpebblecommon.plugin.Plugin
+import io.rebble.libpebblecommon.plugin.PluginOAuthApi
 import io.rebble.libpebblecommon.plugin.PluginRegistry
 import io.rebble.libpebblecommon.services.DailySleep
 import io.rebble.libpebblecommon.services.FirmwareVersion
@@ -220,18 +223,12 @@ interface Weather {
 interface Plugins {
     fun registerPlugin(plugin: Plugin)
 
-    /** Plugins that ship a settings page, for the app to list. */
-    fun configurablePlugins(): List<ConfigurablePlugin>
+    /** Built-in plugins (phone-side data sources like Music or Weather), not backed by a pbw. */
+    fun nativePlugins(): Flow<List<NativePlugin>>
 
     /** The script behind [pluginUuid]'s settings page, or null if it has none. */
     fun configMessageTarget(pluginUuid: String): ConfigMessageTarget?
 }
-
-data class ConfigurablePlugin(
-    val uuid: String,
-    val name: String,
-    val configPageUrl: String,
-)
 
 interface Timeline {
     fun insertOrReplace(pin: TimelinePin)
@@ -306,9 +303,9 @@ sealed class FirmwareUpdateCheckResult {
 interface Calendar {
     fun calendars(): Flow<List<CalendarEntity>>
     fun updateCalendarEnabled(calendarId: Int, enabled: Boolean)
-
-    /** Create an event in the device's primary/default calendar. Returns the new event id, or null. */
-    suspend fun createEvent(event: NewCalendarEvent): String?
+    suspend fun createEvent(calendarId: Int, event: NewCalendarEvent): String?
+    /** The synced calendar matching the platform's default for new events, if known. */
+    suspend fun defaultCalendar(): CalendarEntity?
 }
 
 fun PebbleDevices.forDevice(identifier: String): Flow<PebbleDevice> {
@@ -342,6 +339,12 @@ interface LockerApi {
     fun getAllLockerUuids(): Flow<List<Uuid>>
     fun getLocker(type: AppType, searchQuery: String?, limit: Int): Flow<List<LockerWrapper>>
     fun getLockerApp(id: Uuid): Flow<LockerWrapper?>
+    /**
+     * The config page URL for an installed app, from its appinfo `configPage` — an http(s) URL as
+     * given, or an HTML file bundled in the pbw returned as a data URL. Null when the app declares
+     * none, so callers fall back to the PKJS `showConfiguration` flow.
+     */
+    suspend fun appConfigPageUrl(uuid: Uuid): String?
     suspend fun setAppOrder(id: Uuid, order: Int)
     suspend fun waitUntilAppSyncedToWatch(id: Uuid, identifier: PebbleIdentifier, timeout: Duration): Boolean
     suspend fun removeApp(id: Uuid): Boolean
@@ -416,7 +419,8 @@ class LibPebble3(
     private val watchManager: WatchManager,
     private val scanning: Scanning,
     private val locker: Locker,
-    private val bundledPluginLoader: BundledPluginLoader,
+    private val bundledAppInstaller: BundledAppInstaller,
+    private val lockerPluginLoader: LockerPluginLoader,
     private val pluginRegistry: PluginRegistry,
     private val timeChanged: TimeChanged,
     private val webSyncManager: RequestSync,
@@ -479,7 +483,8 @@ class LibPebble3(
             vibePatternDao.ensureAllDefaultsInserted()
         }
         locker.init(this)
-        bundledPluginLoader.init(this)
+        bundledAppInstaller.init(this)
+        lockerPluginLoader.init()
 
         performPlatformSpecificInit()
     }
@@ -559,8 +564,9 @@ class LibPebble3(
             proxyTokenProvider: StateFlow<String?>,
             transcriptionProvider: TranscriptionProvider,
             injectedPKJSHttpInterceptors: InjectedPKJSHttpInterceptors = InjectedPKJSHttpInterceptors(emptyList()),
+            pluginOAuthApi: PluginOAuthApi? = null,
         ): LibPebble {
-            koin = initKoin(defaultConfig, webServices, appContext, tokenProvider, proxyTokenProvider, transcriptionProvider, injectedPKJSHttpInterceptors)
+            koin = initKoin(defaultConfig, webServices, appContext, tokenProvider, proxyTokenProvider, transcriptionProvider, injectedPKJSHttpInterceptors, pluginOAuthApi)
             // Reads the persisted config (not defaultConfig), but must still precede anything that
             // touches Kable's shared central manager. Every Koin single here is lazy, and Kable is
             // only reached on the first scan/connect, which happens after create() returns.
