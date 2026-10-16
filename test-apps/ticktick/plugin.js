@@ -7,17 +7,21 @@ var BROKER_REFRESH_KEY = 'ticktick_broker_refresh';
 var EXPIRES_AT_KEY = 'ticktick_expires_at';
 var PROJECT_REFRESH_MS = 15 * 60 * 1000;
 
-function accessToken() {
-  return String(localStorage.getItem(TOKEN_KEY) || '').trim();
+async function secureItem(key) {
+  return String(await Pebble.secureStorage.getItem(key) || '').trim();
 }
 
-function saveTokenBundle(bundle) {
+function accessToken() {
+  return secureItem(TOKEN_KEY);
+}
+
+async function saveTokenBundle(bundle) {
   var token = String(bundle && bundle.access_token || '').trim();
   if (!token) throw new Error('TickTick returned no access token.');
-  localStorage.setItem(TOKEN_KEY, token);
+  await Pebble.secureStorage.setItem(TOKEN_KEY, token);
   var brokerRefresh = String(bundle.broker_refresh || '').trim();
-  if (brokerRefresh) localStorage.setItem(BROKER_REFRESH_KEY, brokerRefresh);
-  else localStorage.removeItem(BROKER_REFRESH_KEY);
+  if (brokerRefresh) await Pebble.secureStorage.setItem(BROKER_REFRESH_KEY, brokerRefresh);
+  else await Pebble.secureStorage.removeItem(BROKER_REFRESH_KEY);
   var expiresIn = Number(bundle.expires_in || 0);
   if (isFinite(expiresIn) && expiresIn > 0) {
     localStorage.setItem(EXPIRES_AT_KEY, String(Date.now() + expiresIn * 1000));
@@ -26,20 +30,19 @@ function saveTokenBundle(bundle) {
   }
 }
 
-function clearTokens() {
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(BROKER_REFRESH_KEY);
+async function clearTokens() {
+  await Pebble.secureStorage.removeItem(TOKEN_KEY);
+  await Pebble.secureStorage.removeItem(BROKER_REFRESH_KEY);
   localStorage.removeItem(EXPIRES_AT_KEY);
 }
 
 async function ensureAccessToken() {
-  var token = accessToken();
+  var token = await accessToken();
   var expiresAt = Number(localStorage.getItem(EXPIRES_AT_KEY) || 0);
   if (token && (!expiresAt || Date.now() < expiresAt - 60000)) return token;
-  var brokerRefresh = String(localStorage.getItem(BROKER_REFRESH_KEY) || '').trim();
+  var brokerRefresh = await secureItem(BROKER_REFRESH_KEY);
   if (!brokerRefresh) return token;
-  var refreshed = await Pebble.oauth.refresh('ticktick', brokerRefresh);
-  saveTokenBundle(refreshed);
+  await saveTokenBundle(await Pebble.oauth.refresh('ticktick', brokerRefresh));
   return accessToken();
 }
 
@@ -107,12 +110,36 @@ function tickTickTaskUrl(projectId, taskId) {
   return tickTickProjectUrl(projectId) + '/' + taskId;
 }
 
+var REMINDER_SOURCES = ['reminders/list', 'reminders/configured'];
+
+function booleanReading(value) {
+  return {
+    boolean: { value: !!value },
+    shortText: { text: value ? 'Connected' : 'Not connected' },
+  };
+}
+
+async function respondConfigured(respond) {
+  var configured = (await accessToken()).length > 0;
+  respond.data({
+    validUntilMs: Date.now() + 60 * 1000,
+    instances: [{
+      instanceId: 'ticktick',
+      properties: { name: shortText('TickTick'), configured: booleanReading(configured) },
+    }],
+  });
+}
+
 Pebble.registerSourceHandler(async function (request, respond) {
+  if (request.category === 'reminders' && request.item === 'configured') {
+    await respondConfigured(respond);
+    return;
+  }
   if (request.category !== 'reminders' || request.item !== 'list') {
     respond.error('INVALID_REQUEST', 'Unsupported TickTick source.');
     return;
   }
-  if (!accessToken()) {
+  if (!(await accessToken())) {
     respond.error('AUTH_REQUIRED', 'Connect TickTick in the plugin gear page.');
     return;
   }
@@ -214,7 +241,7 @@ Pebble.registerActionHandler(async function (request, respond) {
     respond.error('INVALID_REQUEST', 'Unsupported TickTick action.');
     return;
   }
-  if (!accessToken()) {
+  if (!(await accessToken())) {
     respond.error('AUTH_REQUIRED', 'Connect TickTick in the plugin gear page.');
     return;
   }
@@ -295,26 +322,26 @@ Pebble.registerActionHandler(async function (request, respond) {
 Pebble.registerConfigHandler(async function (message, respond) {
   switch (message && message.type) {
     case 'status':
-      respond({ configured: accessToken().length > 0 });
+      respond({ configured: (await accessToken()).length > 0 });
       return;
     case 'connect':
       try {
-        saveTokenBundle(await Pebble.oauth.authorize('ticktick'));
+        await saveTokenBundle(await Pebble.oauth.authorize('ticktick'));
         var validation = await requestJson('GET', '/project');
         if (!validation.ok) {
-          clearTokens();
+          await clearTokens();
           respond({ error: 'TickTick did not accept the new authorization.' });
           return;
         }
-        Pebble.refreshSources(['reminders/list']);
+        Pebble.refreshSources(REMINDER_SOURCES);
         respond({ configured: true });
       } catch (error) {
         respond({ error: error && error.message ? error.message : 'Could not connect TickTick.' });
       }
       return;
     case 'unlink':
-      clearTokens();
-      Pebble.refreshSources(['reminders/list']);
+      await clearTokens();
+      Pebble.refreshSources(REMINDER_SOURCES);
       respond({ configured: false });
       return;
     default:

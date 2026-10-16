@@ -28,6 +28,7 @@ import kotlin.uuid.Uuid
 private class FakePlugin(
     override val pluginUuid: Uuid,
     override val name: String,
+    override val description: String = "",
     override val sources: List<SourceDeclaration> = emptyList(),
     override val actions: List<ActionDeclaration> = emptyList(),
 ) : NativePlugin {
@@ -72,7 +73,7 @@ class PluginRegistryTest {
 
     @Test
     fun findsSourcePluginByCategoryAndItem() {
-        val plugin = FakePlugin(UUID_A, "A", listOf(weatherSource()))
+        val plugin = FakePlugin(UUID_A, "A", sources = listOf(weatherSource()))
         val registry = PluginRegistry(setOf(plugin), enabled())
 
         assertEquals(plugin, registry.findSourcePlugin("weather", "location"))
@@ -82,8 +83,8 @@ class PluginRegistryTest {
 
     @Test
     fun prefersRequestedPluginButFallsBack() {
-        val a = FakePlugin(UUID_A, "A", listOf(weatherSource()))
-        val b = FakePlugin(UUID_B, "B", listOf(weatherSource()))
+        val a = FakePlugin(UUID_A, "A", sources = listOf(weatherSource()))
+        val b = FakePlugin(UUID_B, "B", sources = listOf(weatherSource()))
         val registry = PluginRegistry(setOf(a, b), enabled())
 
         assertEquals(b, registry.findSourcePlugin("weather", "location", UUID_B.toString()))
@@ -96,7 +97,7 @@ class PluginRegistryTest {
 
     @Test
     fun actionLookupIsExactAndNeverFallsBack() {
-        val a = FakePlugin(UUID_A, "A", listOf(weatherSource()))
+        val a = FakePlugin(UUID_A, "A", sources = listOf(weatherSource()))
         val registry = PluginRegistry(setOf(a), enabled())
 
         assertEquals(a, registry.findPlugin(UUID_A.toString()))
@@ -108,18 +109,18 @@ class PluginRegistryTest {
         val registry = PluginRegistry(emptySet(), enabled())
         assertNull(registry.findSourcePlugin("weather", "location"))
 
-        val plugin = FakePlugin(UUID_A, "A", listOf(weatherSource()))
+        val plugin = FakePlugin(UUID_A, "A", sources = listOf(weatherSource()))
         registry.registerPlugin(plugin)
         assertEquals(plugin, registry.findSourcePlugin("weather", "location"))
-        assertEquals(1, registry.all().size)
+        assertEquals(1, registry.getAllPlugins().size)
     }
 
     @Test
     fun nothingIsVisibleWhilePluginsAreDisabled() {
-        val plugin = FakePlugin(UUID_A, "A", listOf(weatherSource()))
+        val plugin = FakePlugin(UUID_A, "A", sources = listOf(weatherSource()))
         val registry = PluginRegistry(setOf(plugin), enabled(false))
 
-        assertTrue(registry.all().isEmpty())
+        assertTrue(registry.getAllPlugins().isEmpty())
         assertNull(registry.findPlugin(UUID_A.toString()))
         assertNull(registry.findSourcePlugin("weather", "location"))
     }
@@ -259,10 +260,6 @@ class PluginManifestTest {
             {
               "description": "lights",
               "script": "plugin.js",
-              "usesPermissions": [
-                "LocalNetwork",
-                {"name": "Internet", "parameters": {"domains": ["discovery.meethue.com"]}}
-              ],
               "sources": [
                 {
                   "category": "home",
@@ -300,18 +297,6 @@ class PluginManifestTest {
         assertEquals(30, manifest.sources[0].suggestedRefreshIntervalSec)
         assertTrue(manifest.sources[0].supportsMultiple)
         assertEquals(listOf("room", "light"), manifest.sources[0].items)
-        // What the plugin needs of the user, and what it needs of whoever reads it. A bare name
-        // and a name with arguments are both accepted.
-        assertEquals(
-            listOf(
-                PluginPermission("LocalNetwork"),
-                PluginPermission(
-                    "Internet",
-                    mapOf("domains" to listOf("discovery.meethue.com")),
-                ),
-            ),
-            manifest.usesPermissions,
-        )
         assertEquals(
             listOf(PluginPermission("HomeControl")),
             manifest.sources[0].callerPermissions,
@@ -331,7 +316,6 @@ class PluginManifestTest {
             """{"sources":[{"category":"finance",
                "items":["stock"],"properties":{"price":["shortText"]}}]}""",
         )
-        assertTrue(manifest.usesPermissions.isEmpty())
         assertTrue(manifest.sources[0].callerPermissions.isEmpty())
     }
 
@@ -398,6 +382,15 @@ class MusicPluginTest {
         assertEquals(listOf("on"), actions.first().requiredParams)
         assertTrue(actions.drop(1).all { it.requiredParams.isEmpty() })
         assertTrue(actions.drop(1).all { it.bindable })
+    }
+
+    @Test
+    fun readingNeedsReadMusicAndControllingNeedsControlMusic() {
+        val plugin = MusicPlugin(FakeMusicControl)
+        assertEquals(setOf(PluginPermissions.READ_MUSIC), requiredOfCaller(plugin.sources.single()))
+        plugin.actions.forEach {
+            assertEquals(setOf(PluginPermissions.CONTROL_MUSIC), requiredOfCaller(it))
+        }
     }
 }
 

@@ -33,6 +33,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.PlaylistAddCheck
+import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.MusicNote
@@ -105,6 +106,7 @@ import coredevices.ui.PebbleElevatedButton
 import io.rebble.libpebblecommon.connection.AppContext
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.connection.LibPebble
+import io.rebble.libpebblecommon.permissions.InstallReview
 import io.rebble.libpebblecommon.plugin.NativePlugin
 import io.rebble.libpebblecommon.locker.AppType
 import io.rebble.libpebblecommon.locker.SystemApps
@@ -113,6 +115,7 @@ import io.rebble.libpebblecommon.util.getTempFilePath
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -120,6 +123,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import org.jetbrains.compose.resources.stringResource
 import org.jetbrains.compose.ui.tooling.preview.Preview
@@ -188,7 +192,7 @@ class LockerViewModel(
 
     fun refreshStore(platform: WatchType, useCache: Boolean): Deferred<Unit> {
         storeIsRefreshing = true
-        val finishedAll: List<Deferred<Unit>> = AppType.storeTypes.map {
+        val finishedAll: List<Deferred<Unit>> = AppType.entries.map {
             val finished = CompletableDeferred<Unit>()
             viewModelScope.launch {
                 try {
@@ -261,6 +265,30 @@ fun LockerScreen(
         val libPebble = rememberLibPebble()
         val lastConnectedWatch = lastConnectedWatch()
         val appContext = koinInject<AppContext>()
+        var sideloadReview by remember { mutableStateOf<PendingSideload?>(null) }
+        // Outlives this screen: installing waits for the watch to sync.
+        fun install(path: Path, granted: Map<String, Boolean?>) =
+            GlobalScope.launch { libPebble.sideloadApp(path, granted = granted) }
+        fun sideload(path: Path) {
+            scope.launch {
+                val review = libPebble.reviewSideload(path)
+                if (review == null) install(path, emptyMap()) else sideloadReview = PendingSideload(path, review)
+            }
+        }
+        sideloadReview?.let { pending ->
+            InstallReviewDialog(pending.review) { granted ->
+                sideloadReview = null
+                if (granted != null) install(pending.path, granted)
+            }
+        }
+        val deepLinks: PebbleDeepLinkHandler = koinInject()
+        val pendingAppSideload by deepLinks.pendingAppSideload.collectAsState()
+        LaunchedEffect(pendingAppSideload) {
+            pendingAppSideload?.let {
+                deepLinks.consumePendingAppSideload()
+                sideload(it)
+            }
+        }
         val launchInstallAppDialog = rememberOpenDocumentLauncher {
             it?.firstOrNull()?.let { file ->
                 val tempAppPath = getTempFilePath(appContext, "temp.pbw")
@@ -269,9 +297,7 @@ fun LockerScreen(
                         source.transferTo(sink)
                     }
                 }
-                scope.launch {
-                    libPebble.sideloadApp(tempAppPath)
-                }
+                sideload(tempAppPath)
             }
         }
         val openInstallAppDialog = remember(launchInstallAppDialog) {
@@ -376,6 +402,11 @@ fun LockerScreen(
                     sharedLockerViewModel = sharedViewModel,
                     showWatchfaceOrderSetting = viewModel.type.value == AppType.Watchface,
                 )
+                PendingPermissionRequests(onReview = { appUuid ->
+                    navBarNav.navigateTo(
+                        PebbleNavBarRoutes.LockerAppRoute(uuid = appUuid.toString(), storedId = null, storeSource = null)
+                    )
+                })
                 if (viewModel.searchState.query.isNotEmpty()) {
                     val lockerUuids = remember(lockerEntries) { lockerEntries.mapTo(HashSet()) { it.uuid } }
                     val filteredStoreResults = remember(viewModel.searchPager, sharedViewModel.showIncompatible.value, sharedViewModel.showScaled.value, lockerUuids) {
@@ -1054,6 +1085,7 @@ private fun NativePlugin.builtInIcon(): ImageVector = when (name) {
     "Weather" -> Icons.Filled.Cloud
     "Phone" -> Icons.Filled.Smartphone
     "Watch Settings" -> Icons.Filled.Watch
+    "Watch State" -> Icons.Filled.Apps
     "Notifications" -> Icons.Filled.Notifications
     else -> AppType.Plugin.icon()
 }
@@ -1143,6 +1175,9 @@ fun NativeWatchfaceMainContent(
                 modifier = imageModifier,
                 size = NATIVE_SCREENSHOT_HEIGHT,
             )
+            if (entry.commonAppType is CommonAppType.Locker) {
+                PermissionRequestBadge(entry.uuid, Modifier.align(Alignment.TopEnd).padding(8.dp))
+            }
         }
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -1207,11 +1242,16 @@ fun NativeWatchfaceListItem(
             .padding(vertical = 8.dp, horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        AppImage(
-            entry,
-            modifier = Modifier.width(62.dp).clip(RoundedCornerShape(8.dp)),
-            size = 74.dp,
-        )
+        Box {
+            AppImage(
+                entry,
+                modifier = Modifier.width(62.dp).clip(RoundedCornerShape(8.dp)),
+                size = 74.dp,
+            )
+            if (entry.commonAppType is CommonAppType.Locker) {
+                PermissionRequestBadge(entry.uuid, Modifier.align(Alignment.TopEnd))
+            }
+        }
         Column(
             modifier = Modifier.padding(start = 12.dp)
         ) {
@@ -1320,3 +1360,5 @@ fun AppImage(entry: CommonApp, modifier: Modifier, size: Dp) {
 //                contentScale = ContentScale.Fit,
     )
 }
+
+private data class PendingSideload(val path: Path, val review: InstallReview)

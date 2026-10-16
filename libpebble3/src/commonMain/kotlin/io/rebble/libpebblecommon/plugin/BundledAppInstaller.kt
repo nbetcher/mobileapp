@@ -6,6 +6,8 @@ import io.rebble.libpebblecommon.WatchConfigFlow
 import io.rebble.libpebblecommon.connection.AppContext
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.di.LibPebbleCoroutineScope
+import io.rebble.libpebblecommon.locker.Locker
+import io.rebble.libpebblecommon.locker.LockerWrapper
 import io.rebble.libpebblecommon.util.getTempFilePath
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.firstOrNull
@@ -31,6 +33,7 @@ class BundledAppInstaller(
     private val watchConfig: WatchConfigFlow,
     private val settings: Settings,
     private val scope: LibPebbleCoroutineScope,
+    private val locker: Locker,
 ) {
     private val logger = Logger.withTag("BundledAppInstaller")
 
@@ -58,8 +61,18 @@ class BundledAppInstaller(
                 return@forEach
             }
             val stamp = "${pbw.size}:${pbw.contentHashCode()}"
-            val installed = libPebble.getLockerApp(app.uuid).firstOrNull() != null
-            if (installed && settings.getStringOrNull(stampKey(app)) == stamp) {
+            val existing = libPebble.getLockerApp(app.uuid).firstOrNull()
+            if (existing.isFromStore()) {
+                logger.d { "${app.fileName} is installed from a store; leaving it" }
+                return@forEach
+            }
+            val installed = existing != null
+            val stamped = settings.getStringOrNull(stampKey(app))
+            if (!installed && stamped != null) {
+                logger.d { "${app.fileName} was removed by the user; leaving it out" }
+                return@forEach
+            }
+            if (installed && stamped == stamp) {
                 logger.d { "${app.fileName} already installed and unchanged" }
                 return@forEach
             }
@@ -67,10 +80,11 @@ class BundledAppInstaller(
             SystemFileSystem.sink(path).buffered().use { it.write(pbw) }
             // The pbw's version label doesn't move between builds, so removing it first is what
             // makes the watch treat this as a new app and fetch the new binary.
-            if (installed) libPebble.removeApp(app.uuid)
+            if (installed) locker.removeApp(app.uuid, keepSecrets = true)
             val ok = libPebble.sideloadApp(path, loadOnWatch = false)
             logger.i { "installed ${app.fileName}: $ok" }
-            if (ok) settings.putString(stampKey(app), stamp)
+            if (!ok) return@forEach
+            settings.putString(stampKey(app), stamp)
         }
     }
 
@@ -78,7 +92,13 @@ class BundledAppInstaller(
         BUNDLED_APPS.forEach { app ->
             // Never installed — the common case for everyone who leaves the setting alone.
             if (settings.getStringOrNull(stampKey(app)) == null) return@forEach
-            if (libPebble.getLockerApp(app.uuid).firstOrNull() == null) return@forEach
+            val existing = libPebble.getLockerApp(app.uuid).firstOrNull()
+            if (existing == null) {
+                // Removed by the user: forget that, so turning plugins back on reinstalls it.
+                settings.remove(stampKey(app))
+                return@forEach
+            }
+            if (existing.isFromStore()) return@forEach
             logger.i { "removing ${app.fileName}" }
             libPebble.removeApp(app.uuid)
             settings.remove(stampKey(app))
@@ -87,12 +107,15 @@ class BundledAppInstaller(
 
     private fun stampKey(app: BundledApp) = "bundled_app_${app.uuid}"
 
+    private fun LockerWrapper?.isFromStore() = this is LockerWrapper.NormalApp && !sideloaded
+
     private data class BundledApp(val fileName: String, val uuid: Uuid)
 
     private companion object {
         val BUNDLED_APPS = listOf(
             BundledApp("plugin-test.pbw", Uuid.parse("8b1c6b0e-7d6a-4cf2-a9b2-2c3f8b1c6b0e")),
             BundledApp("weather-face.pbw", Uuid.parse("3f6d2a90-5c41-4b7e-9d38-6a1e0c4f27b5")),
+            BundledApp("met-weather.pbw", Uuid.parse("323dc117-55bd-455f-9ee4-4d0faba56ea1")),
             BundledApp("hue.pbw", Uuid.parse("6f9c1a44-3d1e-4b8a-9c2f-0d5e7a1b3c40")),
             BundledApp("stocks.pbw", Uuid.parse("2c4b7f10-9a3d-4e6b-8f21-5d0c7e9a1b34")),
             BundledApp("notion.pbw", Uuid.parse("c7ad904e-40d5-4cb5-8f13-1d1d3c6a7e21")),

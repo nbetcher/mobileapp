@@ -1,24 +1,24 @@
 {
   "name": "notion",
   "author": "Pebble",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "pebble": {
     "displayName": "Notion",
     "uuid": "c7ad904e-40d5-4cb5-8f13-1d1d3c6a7e21",
     "sdkVersion": "3",
+    "usesPermissions": [
+      {
+        "name": "Internet",
+        "parameters": {
+          "domains": [
+            "api.notion.com"
+          ]
+        }
+      }
+    ],
     "plugin": {
       "description": "Creates child pages or safely appends plain text at the top or bottom of a selected Notion page.",
       "script": "plugin.js",
-      "usesPermissions": [
-        {
-          "name": "Internet",
-          "parameters": {
-            "domains": [
-              "api.notion.com"
-            ]
-          }
-        }
-      ],
       "sources": [
         {
           "category": "notes",
@@ -39,6 +39,24 @@
             ],
             "url": [
               "longText"
+            ]
+          },
+          "supportsMultiple": false,
+          "callerPermissions": [],
+          "suggestedRefreshIntervalSec": 60
+        },
+        {
+          "category": "notes",
+          "items": [
+            "configured"
+          ],
+          "properties": {
+            "name": [
+              "shortText"
+            ],
+            "configured": [
+              "boolean",
+              "shortText"
             ]
           },
           "supportsMultiple": false,

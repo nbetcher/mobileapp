@@ -1,24 +1,24 @@
 {
   "name": "ticktick",
   "author": "Pebble",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "pebble": {
     "displayName": "TickTick",
     "uuid": "b1740936-c2e8-4dd6-b4cf-a85058109ac0",
     "sdkVersion": "3",
+    "usesPermissions": [
+      {
+        "name": "Internet",
+        "parameters": {
+          "domains": [
+            "api.ticktick.com"
+          ]
+        }
+      }
+    ],
     "plugin": {
       "description": "Creates reminders in TickTick and exposes the user's open TickTick lists so an agent can choose a destination.",
       "script": "plugin.js",
-      "usesPermissions": [
-        {
-          "name": "Internet",
-          "parameters": {
-            "domains": [
-              "api.ticktick.com"
-            ]
-          }
-        }
-      ],
       "sources": [
         {
           "category": "reminders",
@@ -39,6 +39,24 @@
           "supportsMultiple": true,
           "callerPermissions": [],
           "suggestedRefreshIntervalSec": 900
+        },
+        {
+          "category": "reminders",
+          "items": [
+            "configured"
+          ],
+          "properties": {
+            "name": [
+              "shortText"
+            ],
+            "configured": [
+              "boolean",
+              "shortText"
+            ]
+          },
+          "supportsMultiple": false,
+          "callerPermissions": [],
+          "suggestedRefreshIntervalSec": 60
         }
       ],
       "actions": [

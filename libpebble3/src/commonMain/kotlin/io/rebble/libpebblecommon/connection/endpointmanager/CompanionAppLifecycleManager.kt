@@ -143,6 +143,7 @@ class CompanionAppLifecycleManager(
                     device = device,
                     appInfo = pbw.info,
                     pkjsRunning = pkjsApp != null,
+                    legacyPebbleKitEnabled = libPebbleConfigFlow.value.watchConfig.enableLegacyPebbleKit,
                     connectionCoroutineScope = connectionScope,
                     libPebbleCoroutineScope = libpebbleCoroutineScope,
                 )?.let {
@@ -199,6 +200,7 @@ expect fun createPlatformSpecificCompanionAppControl(
     device: CompanionAppDevice,
     appInfo: PbwAppInfo,
     pkjsRunning: Boolean,
+    legacyPebbleKitEnabled: Boolean,
     libPebbleCoroutineScope: LibPebbleCoroutineScope,
     connectionCoroutineScope: ConnectionCoroutineScope,
 ): CompanionApp?

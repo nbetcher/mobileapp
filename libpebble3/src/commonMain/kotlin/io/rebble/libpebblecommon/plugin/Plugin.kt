@@ -19,16 +19,12 @@ interface Plugin {
     /** Display name, shown to the user and to an LLM caller. */
     val name: String
 
+    /** Description of the plugin. */
+    val description: String
+
     val sources: List<SourceDeclaration>
 
     val actions: List<ActionDeclaration>
-        get() = emptyList()
-
-    /**
-     * What the user has to let this plugin do. The network ones are enforced for every request a
-     * plugin makes; the rest are declared and not yet checked.
-     */
-    val usesPermissions: List<PluginPermission>
         get() = emptyList()
 
     /**

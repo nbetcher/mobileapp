@@ -7,10 +7,18 @@ import io.rebble.libpebblecommon.js.HttpInterceptorManager
 import io.rebble.libpebblecommon.js.JsEngine
 import io.rebble.libpebblecommon.js.JsEngineInterface
 import io.rebble.libpebblecommon.js.JsEngineLocalStorage
+import io.rebble.libpebblecommon.js.WebSocketManager
 import io.rebble.libpebblecommon.js.XMLHTTPRequestManager
 import io.rebble.libpebblecommon.js.BASE64_JS
+import io.rebble.libpebblecommon.js.EngineGeolocation
 import io.rebble.libpebblecommon.js.FETCH_JS
 import io.rebble.libpebblecommon.js.FETCH_REGISTRY
+import io.rebble.libpebblecommon.js.GEOLOCATION_JS
+import io.rebble.libpebblecommon.js.WEBSOCKET_JS
+import io.rebble.libpebblecommon.permissions.NetworkAccess
+import io.rebble.libpebblecommon.permissions.RunningApps
+import io.rebble.libpebblecommon.storage.pluginSecureStorage
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -49,10 +57,13 @@ class JsPlugin(
     private val scope: CoroutineScope,
     private val httpClient: HttpClient,
     private val httpInterceptorManager: HttpInterceptorManager,
+    private val networkAccess: NetworkAccess,
+    private val runningApps: RunningApps,
     /** Host-side hosted OAuth, when available. Only reachable by plugins that declare a connector. */
     private val oauthApi: PluginOAuthApi? = null,
 ) : Plugin, ConfigMessageTarget {
 
+    override val description: String = manifest.description
     override val sources: List<SourceDeclaration> = manifest.sources
     override val actions: List<ActionDeclaration> = manifest.actions
 
@@ -82,6 +93,10 @@ class JsPlugin(
         val key = "$category/$item"
         val job = launch {
             while (true) {
+                if (retired) {
+                    close(IllegalStateException("$name was updated or removed; subscribe again"))
+                    break
+                }
                 val size = iconPixelSize
                     ?.let { ""","iconPixelSize":{"w":${it.w},"h":${it.h}}""" }
                     .orEmpty()
@@ -94,7 +109,7 @@ class JsPlugin(
                         """$wanted$size}"""
                 )
                 raw?.let { parseEnvelope(it) }?.let { send(it) }
-                withTimeoutOrNull(declaration.suggestedRefreshIntervalSec.seconds) {
+                withTimeoutOrNull(declaration.suggestedRefreshIntervalSec.coerceAtLeast(1).seconds) {
                     refreshRequests.first { it == key }
                 }
             }
@@ -133,16 +148,19 @@ class JsPlugin(
     }
 
     /** Cold-start a session, dispatch one request, tear the session down. */
-    private suspend fun request(requestJson: String): String? = sessionLock.withLock {
-        val session = newSession()
-        try {
-            session.start()
-            awaitReply { id -> session.engine.eval("globalThis.__pluginDispatch($id, $requestJson)") }
-        } catch (e: Exception) {
-            logger.w(e) { "plugin session failed" }
-            null
-        } finally {
-            session.stop()
+    private suspend fun request(requestJson: String): String? = runningApps.whileRunning(pluginUuid) {
+        sessionLock.withLock {
+            if (retired) return@withLock null
+            val session = newSession()
+            try {
+                session.start()
+                awaitReply { id -> session.engine.eval("globalThis.__pluginDispatch($id, $requestJson)") }
+            } catch (e: Exception) {
+                logger.w(e) { "plugin session failed" }
+                null
+            } finally {
+                session.stop()
+            }
         }
     }
 
@@ -158,13 +176,13 @@ class JsPlugin(
         }
     }
 
-    /** Derived once: the manifest is fixed for the life of the plugin. */
-    private val networkPolicy = PluginNetworkPolicy(manifest.usesPermissions)
-
     /** Wired only when the plugin declares an `oauth` connector and the host has an OAuth API. */
     private val oauth = oauthApi?.takeIf { manifest.oauth.isNotEmpty() }
 
+    private val secureStorage = pluginSecureStorage(appContext, pluginUuid)
+
     private fun newSession(): Session {
+        logger.d { "newSession(): $pluginUuid $name" }
         // XHR drives the JS side by evaluating statements that must land in order — readyState
         // before the response body before the events — so callbacks queue rather than race.
         val evals = Channel<String>(Channel.UNLIMITED)
@@ -174,8 +192,15 @@ class JsPlugin(
             httpInterceptorManager = httpInterceptorManager,
             appUuid = pluginUuid,
             client = httpClient,
-            networkPolicy = networkPolicy,
+            networkAccess = networkAccess,
             jsTarget = FETCH_REGISTRY,
+        )
+        val webSockets = WebSocketManager(
+            scope = scope,
+            eval = { js -> evals.trySend(js) },
+            client = httpClient,
+            appUuid = pluginUuid,
+            networkAccess = networkAccess,
         )
         // Same settings scope PKJS uses for this uuid, so a pbw's plugin and its watchapp JS
         // share one set of stored values.
@@ -187,34 +212,50 @@ class JsPlugin(
         val oauthBridge = oauth?.let {
             PluginOAuthJsBridge(scope, { js -> evals.trySend(js) }, pluginUuid.toString(), manifest.oauth.keys, it)
         }
-        val interfaces = listOfNotNull(Bridge(), xhr, localStorage, oauthBridge)
+        val secureStorageBridge = PluginSecureStorageJsBridge(scope, { js -> evals.trySend(js) }, secureStorage)
+        val geolocation = EngineGeolocation(scope, { js -> evals.trySend(js) }, pluginUuid)
+        val interfaces = listOfNotNull(Bridge(), xhr, webSockets, localStorage, geolocation, oauthBridge, secureStorageBridge)
         val engine = JsEngine(appContext, scope, name, interfaces)
-        return Session(engine, xhr, localStorage, oauthBridge, evals, scope.launch { for (js in evals) engine.eval(js) })
+        return Session(
+            engine, xhr, webSockets, localStorage, geolocation, oauthBridge, secureStorageBridge, evals,
+            scope.launch { for (js in evals) engine.eval(js) },
+        )
     }
 
     private inner class Session(
         val engine: JsEngine,
         private val xhr: XMLHTTPRequestManager,
+        private val webSockets: WebSocketManager,
         private val localStorage: JsEngineLocalStorage,
+        private val geolocation: EngineGeolocation,
         private val oauthBridge: PluginOAuthJsBridge?,
+        private val secureStorageBridge: PluginSecureStorageJsBridge,
         private val evals: Channel<String>,
         private val pump: Job,
     ) {
         suspend fun start() {
+            logger.d { "Starting session for: $pluginUuid $name" }
             engine.start()
             engine.eval(localStorage.installJs)
             engine.eval(BASE64_JS)
             engine.eval(FETCH_JS)
+            engine.eval(WEBSOCKET_JS)
+            engine.eval(GEOLOCATION_JS)
             engine.eval(PLUGIN_HOST_JS)
             oauthBridge?.let { engine.eval(PluginOAuthJsBridge.INSTALL_JS) }
+            engine.eval(PluginSecureStorageJsBridge.INSTALL_JS)
             engine.eval(script())
         }
 
         suspend fun stop() {
+            logger.d { "Stopping session for: $pluginUuid $name" }
             evals.close()
             pump.cancel()
             xhr.close()
+            webSockets.close()
+            geolocation.close()
             oauthBridge?.close()
+            secureStorageBridge.close()
             engine.stop()
         }
     }
@@ -234,17 +275,31 @@ class JsPlugin(
 
     override suspend fun closeConfigSession() = configLock.withLock { closeConfigSessionLocked() }
 
+    @Volatile private var retired = false
+
+    suspend fun retire() = configLock.withLock {
+        retired = true
+        closeConfigSessionLocked()
+    }
+
     private suspend fun closeConfigSessionLocked() {
-        configSession?.stop()
+        val session = configSession ?: return
         configSession = null
+        try {
+            session.stop()
+        } finally {
+            runningApps.stopped(pluginUuid)
+        }
     }
 
     /** Starting takes long enough that a page's first message can beat [openConfigSession]. */
     private suspend fun openConfigSessionLocked(): Session? {
+        if (retired) return null
         configSession?.let { return it }
         val session = newSession()
         return try {
             session.start()
+            runningApps.started(pluginUuid)
             session.also { configSession = it }
         } catch (e: Exception) {
             logger.w(e) { "config session failed to start" }

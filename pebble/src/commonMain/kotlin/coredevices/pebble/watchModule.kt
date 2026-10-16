@@ -64,6 +64,7 @@ import coredevices.pebble.config.ConfigPageSessions
 import coredevices.pebble.plugin.HostedPluginOAuthApi
 import coredevices.pebble.weather.WeatherPlugin
 import coredevices.pebble.weather.YahooWeatherInterceptor
+import coredevices.pebble.permissions.PermissionRequestNotifier
 import dev.gitlive.firebase.Firebase
 import dev.gitlive.firebase.auth.auth
 import dev.jordond.compass.geocoder.Geocoder
@@ -213,8 +214,9 @@ val watchModule = module {
     factoryOf(::WeatherFetcher)
     singleOf(::WeatherPlugin)
     singleOf(::ConfigPageSessions)
-    factoryOf(::LanguagePackRepository)
+    singleOf(::LanguagePackRepository)
     factoryOf(::NativeLockerAddUtil)
+    singleOf(::PermissionRequestNotifier)
     singleOf(::WatchOnboardingFinished)
     factoryOf(::AppstoreSourceInitializer)
     factoryOf(::OpenWeather25Interceptor)
