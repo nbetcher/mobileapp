@@ -7,20 +7,25 @@ Pipeline (all anonymous HTTP, no device, no APK):
   1. Store version:  iTunes Lookup API (primary) -> Play web page scrape (fallback)
   2. Changelog:      Notion internal API on ndocs.repebble.com (loadPageChunk)
                      -> per-version release date + item list
-  3. Cutoff commit:  fuzzy-match changelog items against `git log` subjects
+  3. Cutoff commit:  the upstream tag named after the changelog version
+                     (`git ls-remote --tags <tag-remote>`), if it is on --branch
+     Heuristic:      fuzzy-match changelog items against `git log` subjects
                      (author dates survive Core Devices' internal->public
                      rebase-sync; committer dates do not)
                      cutoff = highest-position matched commit
      Fallback:       newest commit authored on/before the release date
+     The heuristic always runs; with a tag it is the cross-check (`tag_check`).
 
 Usage:
   pebble_release_cutoff.py --repo /path/to/mobileapp [--version 1.5.0.2]
-                           [--branch master] [--no-fetch] [--json] [-v]
+                           [--branch master] [--tag-remote origin]
+                           [--no-fetch] [--json] [-v]
 
 Output (stdout): the cutoff SHA (last line), suitable for
   git -C fork update-ref refs/heads/release-track $(pebble_release_cutoff.py ...)
 
-Exit codes: 0 ok (>=2 item matches), 3 ok but date-fallback only, 1 hard error.
+Exit codes: 0 ok (release tag, or >=2 item matches), 3 ok but date-fallback only,
+1 hard error.
 """
 
 import argparse, json, re, subprocess, sys, unicodedata, urllib.request
@@ -235,12 +240,49 @@ def cutoff(repo, branch, entry, verbose=False, threshold=0.55):
     return fb, "date-fallback", matches, int(git(repo, "rev-list", "--count", fb))
 
 
+# ---------- 3a. cutoff via upstream's release tag ----------
+
+def tag_cutoff(repo, branch, remote, version, verbose=False):
+    """Return (sha, status) for upstream's tag named `version`; sha is None unless the tag
+    resolves to a commit on `branch`. Read with ls-remote so upstream's tags never enter
+    the local tag namespace, which the fork's own release tags share."""
+    try:
+        refs = git(repo, "ls-remote", "--tags", remote)
+    except subprocess.CalledProcessError as e:
+        print(f"WARN: git ls-remote --tags {remote} failed: {e.stderr.strip()}", file=sys.stderr)
+        return None, "lookup-failed"
+    by_ref = {ref: sha for sha, ref in (l.split("\t", 1) for l in refs.splitlines() if "\t" in l)}
+    ref = f"refs/tags/{version}"
+    sha = by_ref.get(ref + "^{}") or by_ref.get(ref)   # peeled commit of an annotated tag
+    if sha is None:
+        if verbose: print(f"[tag] no tag {version} on {remote}", file=sys.stderr)
+        return None, "no-tag"
+    if not is_ancestor(repo, sha, branch):
+        print(f"WARN: tag {version} -> {sha[:9]} is not on {branch}; ignoring it", file=sys.stderr)
+        return None, "not-on-branch"
+    return sha, "found"
+
+
+def is_ancestor(repo, a, b):
+    return subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", a, b],
+                          capture_output=True).returncode == 0
+
+
+def tag_vs_heuristic(repo, tag_sha, heur_sha):
+    if tag_sha == heur_sha: return "match"
+    if is_ancestor(repo, heur_sha, tag_sha): return "ahead"
+    if is_ancestor(repo, tag_sha, heur_sha): return "behind"
+    return "diverged"
+
+
 # ---------- main ----------
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True, help="path to local clone of coredevices/mobileapp")
     ap.add_argument("--branch", default="master")
+    ap.add_argument("--tag-remote", default="origin",
+                    help="remote whose tags name releases (coredevices/mobileapp)")
     ap.add_argument("--version", help="override store version (skip store lookup)")
     ap.add_argument("--no-fetch", action="store_true", help="don't git fetch first")
     ap.add_argument("--json", action="store_true", help="emit full JSON to stdout")
@@ -269,13 +311,26 @@ def main():
         print(f"WARN: store version {ver} not in changelog; using {entry['version']}",
               file=sys.stderr)
 
-    sha, method, matches, pos = cutoff(a.repo, a.branch, entry, a.verbose)
+    heur_sha, heur_method, matches, heur_pos = cutoff(a.repo, a.branch, entry, a.verbose)
+    sha, method, pos = heur_sha, heur_method, heur_pos
+    tag_sha, tag_check = tag_cutoff(a.repo, a.branch, a.tag_remote, entry["version"], a.verbose)
+    if tag_sha:
+        tag_check = tag_vs_heuristic(a.repo, tag_sha, heur_sha)
+        sha, method, pos = tag_sha, "release-tag", int(git(a.repo, "rev-list", "--count", tag_sha))
+        if a.verbose:
+            print(f"[tag] {entry['version']} -> {tag_sha[:9]} (position {pos}); heuristic "
+                  f"{heur_method} -> {heur_sha[:9]} (position {heur_pos}): {tag_check}",
+                  file=sys.stderr)
     head_pos = int(git(a.repo, "rev-list", "--count", a.branch))
 
     result = {"store_version": ver, "store_source": src,
               "changelog_version": entry["version"],
               "release_date": entry["date"].strftime("%Y-%m-%d") if entry["date"] else None,
               "method": method,
+              "release_tag": entry["version"] if tag_sha else None,
+              "tag_check": tag_check,
+              "heuristic_method": heur_method, "heuristic_sha": heur_sha,
+              "heuristic_position": heur_pos,
               "items_total": len(entry["items"]), "items_matched": len(matches),
               "cutoff_sha": sha, "cutoff_position": pos,
               "branch_head_position": head_pos,
@@ -285,11 +340,11 @@ def main():
     if a.json:
         print(json.dumps(result, indent=2))
     else:
-        print(f"version={ver} method={method} matched={len(matches)}/{len(entry['items'])} "
-              f"cutoff_pos={pos}/{head_pos}", file=sys.stderr)
+        print(f"version={ver} method={method} tag_check={tag_check} "
+              f"matched={len(matches)}/{len(entry['items'])} cutoff_pos={pos}/{head_pos}", file=sys.stderr)
         print(sha)
 
-    sys.exit(0 if method == "item-match" else 3)
+    sys.exit(3 if method == "date-fallback" else 0)
 
 
 if __name__ == "__main__":

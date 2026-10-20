@@ -12,12 +12,20 @@ Two workflows:
 
 ## What it tracks
 
-Not `master` HEAD — the **released** commit. Upstream ships no tags and no releases, and the store
-APK's `versionCode` is not a public commit count, but the changelog is machine-readable:
-`tools/pebble_release_cutoff.py` reads the live store version, pulls that version's bullets from
-`ndocs.repebble.com/changelog`, and fuzzy-matches them against commit *subjects* in public history.
-Author dates survive Core Devices' internal→public rebase-sync (committer dates do not), so the
-matched commits give a **release cutoff** — upstream HEAD minus a drift re-measured every run:
+Not `master` HEAD — the **released** commit. Upstream publishes no GitHub releases and the store
+APK's `versionCode` is not a public commit count, but upstream does push a git tag per release
+(`1.15.0.1` → `ec2156cc`). `tools/pebble_release_cutoff.py` reads the live store version, takes that
+version's row from `ndocs.repebble.com/changelog`, and resolves the **release cutoff** as:
+
+1. **the upstream tag** named after the changelog version (`git ls-remote --tags upstream`; never
+   fetched into this fork's tag namespace), when it exists and is on upstream master; otherwise
+2. **the changelog heuristic**: the version's bullets fuzzy-matched against commit *subjects* in
+   public history (author dates survive Core Devices' internal→public rebase-sync; committer dates
+   do not), taking the highest-positioned match. It runs every time and is reported against the tag
+   as `tag_check` (`match` / `ahead` / `behind` / `diverged`, or why no tag was used). It stopped
+   1–2 commits short of the tag for 1.13.0.2, 1.14.0.1 and 1.15.0.1.
+
+Either way the cutoff is upstream HEAD minus a drift re-measured every run:
 
 ```
 cutoff_position = branch_head_position - unreleased_commits_beyond_cutoff
@@ -31,23 +39,30 @@ string the pipeline records as `last_synced_version`.
 1. **Disable upstream CI** — `gh workflow disable build.yml release.yml`, every run, idempotent.
    Upstream's `build.yml` runs an iOS job on `macos-15`; `release.yml` fires on `release:
    published` and commits to master, which would corrupt the mirror the first time we cut a release.
-2. **Resolve the cutoff** — store version → changelog → fuzzy match. Exit 3 (`date-fallback`,
-   fewer than 2 bullets matched) is *accepted* and flagged, not fatal: upstream changelogs are
-   often 1–2 bullets, so the ≥2 bar frequently can't be cleared even when the answer is right.
-3. **Check the ledger** — if the changelog version equals `last_synced_version`, exit quietly. This
+2. **Probe the go-signals** (`plugin-readiness.sh`) — read-only checks of upstream master and the
+   latest PebbleKitAndroid2 tag for the changes that would let the bridge leave this fork (Plugin
+   API readiness review, 2026-10-20). A changed vector opens a `GO-SIGNAL` issue, then is stored as
+   `plugin_readiness` in the ledger. Runs every tick; a failing probe never blocks the sync.
+3. **Resolve the cutoff** — store version → changelog → upstream tag, else fuzzy match. Exit 3
+   (`date-fallback`: no tag and fewer than 2 bullets matched) is *accepted* and flagged, not fatal:
+   upstream changelogs are often 1–2 bullets, so the ≥2 bar frequently can't be cleared even when
+   the answer is right.
+4. **Check the ledger** — if the changelog version equals `last_synced_version`, exit quietly. This
    holds even if that version's build failed: a failed build is left alone, and only a genuinely
-   **new** upstream version moves the pipeline.
-4. **Merge** the cutoff into `tasker`, in three tiers — see below.
-5. **Tap-drift check** (`tap-check.sh`) — greps the `// BRIDGE-TAP: <id>` anchors.
-6. **Pin `.github/workflows` back to our side**, then **push** `tasker`, and best-effort sync
+   **new** upstream version moves the pipeline. One exception: when upstream's tag for the synced
+   version sits strictly *ahead* of `last_synced_cutoff` (it was synced from the heuristic, or before
+   the tag was pushed), the version is re-synced once, forward, to the tag.
+5. **Merge** the cutoff into `tasker`, in three tiers — see below.
+6. **Tap-drift check** (`tap-check.sh`) — greps the `// BRIDGE-TAP: <id>` anchors.
+7. **Pin `.github/workflows` back to our side**, then **push** `tasker`, and best-effort sync
    `release-track` + the `master` mirror. `GITHUB_TOKEN` cannot push any ref that creates or
    updates workflow files — no `permissions:` key grants it — so the merge's workflow changes are
    dropped (they're disabled in this fork regardless), and the two mirror refs, which point at raw
    upstream commits, simply **warn and skip**. Add a PAT with `workflow` scope as `PIPELINE_PAT` to
    restore them; nothing in the pipeline depends on either.
-7. **Tag + release** `v<version>-tasker.<N>`, *before* the build.
-8. **Build** via `android-release.yml` → `Pebble_<version>-<commit8>-<counter>.apk`, signed.
-9. **Finalize** — attach the APK + `.sha256` on success; on failure delete the **release**, keep
+8. **Tag + release** `v<version>-tasker.<N>`, *before* the build.
+9. **Build** via `android-release.yml` → `Pebble_<version>-<commit8>-<counter>.apk`, signed.
+10. **Finalize** — attach the APK + `.sha256` on success; on failure delete the **release**, keep
    the **tag**, and strike the version.
 
 ## Merge tiers
@@ -67,13 +82,14 @@ string the pipeline records as `last_synced_version`.
 
 ```jsonc
 {
-  "last_synced_version": "1.8.0.6",   // changelog col 2 — the only sync gate
+  "last_synced_version": "1.8.0.6",   // changelog col 2 — the sync gate (step 4)
   "last_synced_cutoff":  "<sha>",     // upstream commit it was cut from
   "previous":            { ... },     // rollback target if the merge fails
   "build_counters":      { "1.8.0.6": 2 },
   "build_strikes":       ["1.8.0.4"], // distinct versions that merged but failed to build
   "status": "built" | "merging" | "build-failed" | "merge-failed",
-  "cutoff": { ... }                   // full resolver output: position, drift, method, matches
+  "cutoff": { ... },                  // resolver output: position, drift, method, tag_check, heuristic
+  "plugin_readiness": { "p1_default_on": "false", ... }  // last go-signal vector (plugin-readiness.sh)
 }
 ```
 
@@ -90,7 +106,8 @@ gh workflow run fork-sync.yml -f reset_strikes=true -f force=true
 
 | Script | Role | Exit code on failure |
 |---|---|---|
-| `issue.sh` | open/comment the owner-assigned `pipeline` failure issue (de-duped per kind) | — |
+| `issue.sh` | open/comment the owner-assigned `pipeline` issue (de-duped per kind) | — |
+| `plugin-readiness.sh` | read-only de-fork go-signal probe; prints `key=value` per detector, baselines in its trailing comments and `../plugin-readiness.baseline` | — |
 | `tap-check.sh` | ⚠ patch-tap anchor grep on `libpebble3/src` | `31` |
 | `sign.sh` | `zipalign` → `apksigner sign` → `verify` → `zipalign -c` | `41` |
 

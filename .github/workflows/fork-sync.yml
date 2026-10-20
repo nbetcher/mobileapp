@@ -4,14 +4,21 @@
 #
 # WHAT "the released commit" MEANS
 # --------------------------------
-# Upstream (coredevices/mobileapp) publishes no tags and no releases, and the
-# shipped APK's versionCode is not a public commit count (HLDD-004 §3). What is
-# resolvable is the released commit's POSITION in public history:
-# tools/pebble_release_cutoff.py reads the live store version, pulls that
-# version's changelog bullets from ndocs.repebble.com, fuzzy-matches them against
-# `git log` subjects (author dates survive Core Devices' internal->public
-# rebase-sync; committer dates do not), and returns the highest-positioned
-# matched commit — upstream HEAD minus a drift RE-MEASURED every run:
+# Upstream (coredevices/mobileapp) publishes no GitHub releases, and the shipped
+# APK's versionCode is not a public commit count (HLDD-004 §3), but it does push
+# a git tag per release (`1.15.0.1` -> ec2156cc). tools/pebble_release_cutoff.py
+# reads the live store version, takes that version's changelog row from
+# ndocs.repebble.com, and resolves the released commit as:
+#
+#   1. upstream's tag named after the changelog version (`git ls-remote --tags
+#      upstream`), when it exists and is on upstream master; otherwise
+#   2. the highest-positioned commit whose subject fuzzy-matches one of that
+#      version's changelog bullets (author dates survive Core Devices'
+#      internal->public rebase-sync; committer dates do not). This heuristic
+#      runs every time and is reported against the tag (`tag_check`); it
+#      stopped 1-2 commits short of the tag for 1.13.0.2, 1.14.0.1 and 1.15.0.1.
+#
+# Either way the cutoff is upstream HEAD minus a drift RE-MEASURED every run:
 #
 #     cutoff_position = branch_head_position - unreleased_commits_beyond_cutoff
 #
@@ -23,7 +30,11 @@
 # `pipeline-state` branch and drives everything:
 #
 #   version unchanged  -> nothing to do, exit quietly (even if last build failed:
-#                         "sync+merge ok but build failed" is left ALONE)
+#                         "sync+merge ok but build failed" is left ALONE) --
+#                         unless upstream's tag for that version now sits AHEAD
+#                         of the recorded cutoff (the version was synced from the
+#                         heuristic, or before the tag was pushed): then the
+#                         version is re-synced once, forward, to its tag
 #   merge fails        -> merge reverted, ledger rolled back to the previous
 #                         version, MERGE-FAIL issue, next tick retries
 #   merge ok, build ok -> ledger advanced, strikes cleared
@@ -37,6 +48,10 @@
 #
 # Merge conflicts are resolved in three escalating tiers (rerere replay ->
 # Gemini CLI -> abort+revert), see the merge step.
+#
+# Every tick, release or not, also runs tools/pipeline/lib/plugin-readiness.sh:
+# a read-only probe for the upstream changes that would let the Tasker bridge
+# leave this fork. A changed result opens a GO-SIGNAL issue; see that step.
 #
 # Extra secret this needs beyond the signing set: GEMINI_API_KEY (Google AI
 # Studio). Without it the AI tier fails and merges fall back to abort+revert.
@@ -203,6 +218,7 @@ jobs:
               s["build_strikes"] = []
               p.write_text(json.dumps(s, indent=2, sort_keys=True) + "\n")
           print("last_version=" + str(s.get("last_synced_version", "")))
+          print("last_cutoff=" + str(s.get("last_synced_cutoff", "")))
           print("strikes=" + ",".join(s.get("build_strikes", [])))
           print("strike_count=" + str(len(s.get("build_strikes", []))))
           PY
@@ -222,19 +238,118 @@ jobs:
             cd - >/dev/null
           fi
 
+      # --- GO-SIGNAL probe: read-only checks of upstream master and the latest
+      # PebbleKitAndroid2 tag for the changes that would let the Tasker bridge
+      # leave this fork (Plugin API readiness review 2026-10-20, §7). It runs
+      # before the release gate so every tick probes, and it can never fail the
+      # sync. A changed vector files a GO-SIGNAL issue first and only then moves
+      # `plugin_readiness` in the ledger, so a lost issue re-fires next tick.
+      # Until the ledger holds a vector, the 2026-10-20 baseline stands in. ----
+      - name: Plugin-readiness probe
+        id: readiness
+        continue-on-error: true
+        env:
+          UPSTREAM_SHORT: ${{ steps.upstream.outputs.short }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -eu
+          # GITHUB_OUTPUT blanked: the probe would otherwise publish every signal as a step output.
+          REPO=. UPSTREAM_REF="upstream/${UPSTREAM_BRANCH}" GITHUB_OUTPUT= \
+            sh tools/pipeline/lib/plugin-readiness.sh > /tmp/plugin-readiness.txt
+          cat /tmp/plugin-readiness.txt
+
+          python3 - <<'PY'
+          import json, os, pathlib, shlex
+          def kv(text):
+              return dict(l.split("=", 1) for l in text.splitlines() if "=" in l and not l.startswith("#"))
+          cur = kv(pathlib.Path("/tmp/plugin-readiness.txt").read_text())
+          p = pathlib.Path(".state") / os.environ["STATE_FILE"]
+          s = json.loads(p.read_text()) if p.exists() else {}
+          seeded = "plugin_readiness" not in s
+          old = kv(pathlib.Path("tools/pipeline/plugin-readiness.baseline").read_text()) if seeded \
+              else s["plugin_readiness"]
+          # An unreadable source is unknown, not a signal: gh failures print NA, and an unreachable
+          # PebbleKitAndroid2 (no tag, or raw.githubusercontent.com down) zeroes every l* count at once.
+          unknown = {k for k, v in cur.items() if v in ("", "NA")}
+          if all(cur.get(k) == "0" for k in ("l1_bundle_actions", "l2_listener_events", "l3_provider_consts")):
+              unknown |= {k for k in cur if k[:3] in ("l1_", "l2_", "l3_")}
+          new = {k: old.get(k, v) if k in unknown else v for k, v in cur.items()}
+          changed = sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k))
+          json.dump(new, open("/tmp/plugin-readiness.json", "w"), indent=2, sort_keys=True)
+
+          was = "the 2026-10-20 baseline" if seeded else "the last recorded probe"
+          body = [f"**A de-fork go-signal moved** since {was}. Probed upstream `master` at "
+                  f"`{os.environ['UPSTREAM_SHORT']}` and PebbleKitAndroid2 `{new.get('l0_pk2_latest_tag', '?')}`.",
+                  "", "| Signal | Was | Now |", "|---|---|---|"]
+          body += [f"| `{k}` | `{old.get(k, '(absent)')}` | `{new.get(k, '(absent)')}` |" for k in changed]
+          body += ["", "Weigh this against the flip rules in §7.2 of the Plugin API readiness review",
+                   "(`docs/reviews/2026-10-20-plugin-api-readiness/README.md` in the Pebble project docs).",
+                   "Signals on master are MASTER_ONLY: act only once they reach an upstream release tag",
+                   "(`git ls-remote --tags upstream`). `g11_*` rows track upstream engagement, not readiness."]
+          if unknown:
+              body += ["", "Unreadable this run, previous values kept: " + ", ".join(f"`{k}`" for k in sorted(unknown))]
+          body += ["", f"- Run: {os.environ['RUN_URL']}"]
+          pathlib.Path("/tmp/go-signal.md").write_text("\n".join(body) + "\n")
+
+          title = ", ".join(changed[:4]) + (f" +{len(changed) - 4} more" if len(changed) > 4 else "")
+          out = {"changed": str(len(changed)), "seeded": str(seeded).lower(),
+                 "changed_keys": title, "unknown": ",".join(sorted(unknown))}
+          open("/tmp/readiness.env", "w").write("".join(f"{k}={v}\n" for k, v in out.items()))
+          open("/tmp/readiness.sh", "w").write("".join(f"{k}={shlex.quote(v)}\n" for k, v in out.items()))
+          PY
+          . /tmp/readiness.sh
+          cat /tmp/readiness.env >> "$GITHUB_OUTPUT"
+
+          if [ -n "$unknown" ]; then
+            echo "::warning title=Plugin-readiness probe incomplete::could not read ${unknown}; kept their previous values"
+          fi
+          if [ "$changed" = "0" ] && [ "$seeded" = "false" ]; then
+            echo "plugin readiness: no change"
+            exit 0
+          fi
+          if [ "$changed" != "0" ]; then
+            cat /tmp/go-signal.md
+          fi
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "dry run: no GO-SIGNAL issue, ledger untouched"
+            exit 0
+          fi
+
+          if [ "$changed" != "0" ]; then
+            PIPELINE_FAILURE_FOOTER=false sh tools/pipeline/lib/issue.sh GO-SIGNAL \
+              "De-fork go-signal changed: ${changed_keys}" /tmp/go-signal.md
+          fi
+          python3 - <<'PY'
+          import json, os, pathlib
+          p = pathlib.Path(".state") / os.environ["STATE_FILE"]
+          s = json.loads(p.read_text()) if p.exists() else {}
+          s["plugin_readiness"] = json.load(open("/tmp/plugin-readiness.json"))
+          p.write_text(json.dumps(s, indent=2, sort_keys=True) + "\n")
+          PY
+          cd .state
+          git add "$STATE_FILE"
+          git -c user.name="pipeline-bot" -c user.email="pipeline-bot@users.noreply.github.com" \
+              commit -m "pipeline: plugin readiness ${changed_keys:-baseline recorded}"
+          git push origin "HEAD:refs/heads/${STATE_BRANCH}" || {
+            git fetch --no-tags origin "$STATE_BRANCH"
+            git rebase FETCH_HEAD
+            git push origin "HEAD:refs/heads/${STATE_BRANCH}"
+          }
+
       # --- RESOLVE the released cutoff. ---------------------------------------
-      # Exit 0 = >=2 changelog bullets matched a commit subject; exit 3 = fewer
-      # matched, so it fell back to "newest commit AUTHORED on or before the
-      # release date". Exit 3 is ACCEPTED (upstream changelog entries are often
-      # only 1-2 bullets — 1.8.0.6 had two — so the >=2 bar frequently can't be
-      # cleared even when the date answer is right); it's flagged, not fatal.
+      # Exit 0 = upstream's release tag, or >=2 changelog bullets matched a
+      # commit subject; exit 3 = no tag and fewer matched, so it fell back to
+      # "newest commit AUTHORED on or before the release date". Exit 3 is
+      # ACCEPTED (upstream changelog entries are often only 1-2 bullets — 1.8.0.6
+      # had two — so the >=2 bar frequently can't be cleared even when the date
+      # answer is right); it's flagged, not fatal.
       - name: Resolve release cutoff
         id: cutoff
         env:
           VERSION_OVERRIDE: ${{ inputs.version }}
         run: |
           set -eu
-          set -- --repo . --no-fetch --branch "upstream/${UPSTREAM_BRANCH}" --json -v
+          set -- --repo . --no-fetch --branch "upstream/${UPSTREAM_BRANCH}" --tag-remote upstream --json -v
           if [ -n "${VERSION_OVERRIDE:-}" ]; then
             set -- "$@" --version "$VERSION_OVERRIDE"
           fi
@@ -259,6 +374,11 @@ jobs:
               ("changelog_version", "changelog_version"),
               ("release_date", "release_date"),
               ("method", "method"),
+              ("release_tag", "release_tag"),
+              ("tag_check", "tag_check"),
+              ("heuristic_method", "heuristic_method"),
+              ("heuristic_sha", "heuristic_sha"),
+              ("heuristic_position", "heuristic_position"),
               ("items_matched", "items_matched"),
               ("items_total", "items_total"),
               ("position", "cutoff_position"),
@@ -284,22 +404,41 @@ jobs:
           if [ "$fallback" = "true" ]; then
             echo "::warning title=Date-fallback cutoff::matched ${items_matched}/${items_total} changelog items; cutoff taken from the release date (position ${position}/${head_position})"
           fi
+          case "$tag_check" in
+            match) ;;
+            ahead|behind|diverged)
+              echo "::notice title=Cutoff from upstream tag ${release_tag}::tag at position ${position}; the changelog heuristic (${heuristic_method}) gave ${heuristic_sha} at position ${heuristic_position} (tag is ${tag_check})" ;;
+            no-tag)
+              echo "::notice title=No upstream tag yet::no tag ${changelog_version} on upstream; cutoff from the changelog heuristic (${method})" ;;
+            *)
+              echo "::warning title=Upstream tag unusable::tag lookup for ${changelog_version}: ${tag_check}; cutoff from the changelog heuristic (${method})" ;;
+          esac
 
       # --- Is there anything new? --------------------------------------------
-      # The ledger version is the ONLY gate. A version whose build failed stays
+      # The ledger version is the gate. A version whose build failed stays
       # recorded, so it is not retried automatically — exactly as specified.
+      # The one exception: a version synced from the heuristic (or before its
+      # tag was pushed) is re-synced once upstream's tag for it sits strictly
+      # AHEAD of the recorded cutoff. Forward-only, so it can never loop.
       - name: Decide whether to sync
         id: decide
         env:
           NEW_VERSION: ${{ steps.cutoff.outputs.changelog_version }}
           LAST_VERSION: ${{ steps.ledger.outputs.last_version }}
+          LAST_CUT: ${{ steps.ledger.outputs.last_cutoff }}
+          METHOD: ${{ steps.cutoff.outputs.method }}
           CUT: ${{ steps.cutoff.outputs.sha }}
         run: |
           set -eu
           if [ "$NEW_VERSION" = "$LAST_VERSION" ] && [ "${{ inputs.force }}" != "true" ]; then
-            echo "proceed=false" >> "$GITHUB_OUTPUT"
-            echo "Already synced to $NEW_VERSION; nothing to do."
-            exit 0
+            if [ "$METHOD" = "release-tag" ] && [ -n "$LAST_CUT" ] && [ "$CUT" != "$LAST_CUT" ] \
+               && git merge-base --is-ancestor "$LAST_CUT" "$CUT" 2>/dev/null; then
+              echo "Re-syncing $NEW_VERSION: upstream tag $CUT is ahead of the recorded cutoff $LAST_CUT."
+            else
+              echo "proceed=false" >> "$GITHUB_OUTPUT"
+              echo "Already synced to $NEW_VERSION; nothing to do."
+              exit 0
+            fi
           fi
           # Sanity: the cutoff must really be on upstream master.
           git merge-base --is-ancestor "$CUT" "upstream/${UPSTREAM_BRANCH}" || {
@@ -627,6 +766,7 @@ jobs:
             echo "| Upstream HEAD | \`${{ steps.upstream.outputs.short }}\` at position ${{ steps.cutoff.outputs.head_position }} |"
             echo "| Unreleased drift | ${{ steps.cutoff.outputs.drift }} commits |"
             echo "| Cutoff method | \`${{ steps.cutoff.outputs.method }}\` (${{ steps.cutoff.outputs.items_matched }}/${{ steps.cutoff.outputs.items_total }} changelog items matched) |"
+            echo "| Upstream tag | \`${{ steps.cutoff.outputs.release_tag || 'none' }}\` (${{ steps.cutoff.outputs.tag_check }} vs. heuristic) |"
             echo "| Merge | \`${{ steps.merge.outputs.resolved_by || 'gemini' }}\` |"
             echo
             echo "> ⏳ Build in progress — the APK is attached when it passes. If the"
@@ -813,6 +953,8 @@ jobs:
             echo "| Previously synced | \`${{ steps.ledger.outputs.last_version || 'none' }}\` |"
             echo "| Cutoff | \`${{ steps.cutoff.outputs.short }}\` at position ${{ steps.cutoff.outputs.position }} of ${{ steps.cutoff.outputs.head_position }} (drift ${{ steps.cutoff.outputs.drift }}) |"
             echo "| Method | \`${{ steps.cutoff.outputs.method }}\` — ${{ steps.cutoff.outputs.items_matched }}/${{ steps.cutoff.outputs.items_total }} items matched |"
+            echo "| Upstream tag | \`${{ steps.cutoff.outputs.release_tag || 'none' }}\` — ${{ steps.cutoff.outputs.tag_check }}; heuristic \`${{ steps.cutoff.outputs.heuristic_method }}\` at position ${{ steps.cutoff.outputs.heuristic_position }} |"
+            echo "| Plugin readiness | ${{ steps.readiness.outcome == 'success' && format('{0} signal(s) changed', steps.readiness.outputs.changed) || 'probe step failed — see its log' }} |"
             echo "| Action | ${{ steps.decide.outputs.proceed == 'true' && 'sync' || 'up to date — no action' }} |"
             echo "| Merge | ${{ steps.merge.outputs.resolved_by || (steps.merge.outputs.conflicted == 'true' && 'gemini' || 'n/a') }} |"
             echo "| Strikes | ${{ steps.ledger.outputs.strike_count }} (${{ steps.ledger.outputs.strikes || 'none' }}) |"

@@ -34,6 +34,8 @@
 #   GH_REPO / GITHUB_REPOSITORY   owner/repo
 #   PIPELINE_ASSIGNEE     GitHub login to assign (default: @me -> token owner)
 #   PIPELINE_LABEL        base label (default: pipeline)
+#   PIPELINE_FAILURE_FOOTER  `false` drops the runbook/retry footer (for
+#                         non-failure kinds such as GO-SIGNAL; default: true)
 #   UPSTREAM_SHA, LAST_BUILT_SHA, RUN_URL  woven into the synthesized body
 #
 # Exit codes:
@@ -101,12 +103,14 @@ append_ctx "Conflicting files"        /tmp/pipeline-conflict-files.txt
 append_ctx "Upstream commit range"    /tmp/pipeline-upstream-range.txt
 append_ctx "Missing taps"             /tmp/pipeline-tap-missing.txt
 
-# Always end with the runbook pointer (§8).
-{
-  echo
-  echo "_Resolution runbook: \`docs/runbooks/conflict-resolution.md\`._"
-  echo "_The pipeline is idle (last-built SHA not advanced) and will retry each tick until this is resolved; re-run with \`workflow_dispatch force=true\` after fixing._"
-} >> "$BODY_TMP"
+# End failure issues with the runbook pointer (§8).
+if [ "${PIPELINE_FAILURE_FOOTER:-true}" = "true" ]; then
+  {
+    echo
+    echo "_Resolution runbook: \`docs/runbooks/conflict-resolution.md\`._"
+    echo "_The pipeline is idle (last-built SHA not advanced) and will retry each tick until this is resolved; re-run with \`workflow_dispatch force=true\` after fixing._"
+  } >> "$BODY_TMP"
+fi
 
 # --- De-dupe: look for an existing OPEN issue of the same kind. ---------------
 # Search by the kind label; if one is open, comment instead of re-filing.
