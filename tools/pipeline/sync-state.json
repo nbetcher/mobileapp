@@ -5,7 +5,7 @@
     "1.12.0.1": 1,
     "1.13.0.2": 5,
     "1.14.0.1": 1,
-    "1.15.0.1": 1,
+    "1.15.0.1": 2,
     "1.8.0.6": 7,
     "1.9.1.3": 1
   },
@@ -14,17 +14,22 @@
     "1.15.0.1"
   ],
   "cutoff": {
-    "branch_head_position": 2342,
+    "branch_head_position": 2371,
     "changelog_version": "1.15.0.1",
-    "cutoff_position": 2340,
-    "cutoff_sha": "ac9977d50ae774e24b23c922a6c1283c07b73d1e",
+    "cutoff_position": 2342,
+    "cutoff_sha": "ec2156cc38a850e5458addba2a2fb8efa34396df",
+    "heuristic_method": "item-match",
+    "heuristic_position": 2340,
+    "heuristic_sha": "ac9977d50ae774e24b23c922a6c1283c07b73d1e",
     "items_matched": 38,
     "items_total": 39,
-    "method": "item-match",
+    "method": "release-tag",
     "release_date": "2026-10-09",
+    "release_tag": "1.15.0.1",
     "store_source": "itunes",
     "store_version": "1.15.0.1",
-    "unreleased_commits_beyond_cutoff": 2
+    "tag_check": "ahead",
+    "unreleased_commits_beyond_cutoff": 29
   },
   "last_built_tag": "v1.13.0.2-tasker.5",
   "last_built_version": "1.13.0.2",
@@ -33,7 +38,7 @@
     "run_url": "https://github.com/nbetcher/mobileapp/actions/runs/35522152598",
     "version": "1.13.0.2"
   },
-  "last_synced_cutoff": "ac9977d50ae774e24b23c922a6c1283c07b73d1e",
+  "last_synced_cutoff": "ec2156cc38a850e5458addba2a2fb8efa34396df",
   "last_synced_tasker": "ffd9e49c8f8cc1d5c390af41d82c227df75c82c0",
   "last_synced_version": "1.15.0.1",
   "plugin_readiness": {
@@ -67,11 +72,11 @@
     "p9_request_timeout": "REQUEST_TIMEOUT=20.seconds"
   },
   "previous": {
-    "last_synced_cutoff": "744b2ac1bd0840fc0a0a74638334c1c70568d9d9",
-    "last_synced_tasker": "2d399e6fb613957489201de4867599b5e9b52cc3",
-    "last_synced_version": "1.14.0.1"
+    "last_synced_cutoff": "ac9977d50ae774e24b23c922a6c1283c07b73d1e",
+    "last_synced_tasker": "ffd9e49c8f8cc1d5c390af41d82c227df75c82c0",
+    "last_synced_version": "1.15.0.1"
   },
-  "run_url": "https://github.com/nbetcher/mobileapp/actions/runs/38851530249",
-  "status": "build-failed",
-  "updated_at": "2026-10-16T04:47:25Z"
+  "run_url": "https://github.com/nbetcher/mobileapp/actions/runs/39545123824",
+  "status": "merging",
+  "updated_at": "2026-10-21T04:38:38Z"
 }
