@@ -67,7 +67,7 @@
     "p4_aidl_files": "0",
     "p4_caller_kinds": "2",
     "p4_future_bullet": "true",
-    "p5_builtin_plugins": "7",
+    "p5_builtin_plugins": "8",
     "p5_watchstate_no_src": "true",
     "p9_request_timeout": "REQUEST_TIMEOUT=20.seconds"
   },
