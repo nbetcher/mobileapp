@@ -62,11 +62,11 @@
     "l3_provider_consts": "16",
     "p1_default_on": "false",
     "p2_toggle_in_debug": "false",
-    "p3_dont_ship": "true",
+    "p3_dont_ship": "false",
     "p3_testapps_present": "false",
     "p4_aidl_files": "0",
     "p4_caller_kinds": "2",
-    "p4_future_bullet": "true",
+    "p4_future_bullet": "false",
     "p5_builtin_plugins": "9",
     "p5_watchstate_no_src": "true",
     "p9_request_timeout": "REQUEST_TIMEOUT=20.seconds"
