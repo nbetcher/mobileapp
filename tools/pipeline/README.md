@@ -82,17 +82,18 @@ string the pipeline records as `last_synced_version`.
 ## Compile gate
 
 A clean merge can still break the fork: a new subtype of an upstream sealed class makes the fork's
-exhaustive `when` maps fail to compile. `compile-gate.sh` compiles `:tasker-bridge` (main + unit
-tests) and `:composeApp` right after the merge, before anything is pushed or tagged. On failure:
+exhaustive `when` maps fail to compile. Right after the merge, before anything is pushed or tagged:
 
-1. **Auto-mapper** — `exhaustive_when_fix.py` adds missing `is X -> "x"` branches (snake_case of the
-   class name) to `when` bodies that are nothing but such lines. Anything else is left alone.
-2. **Gemini** — fixes what's left, told never to add an `else` branch.
+1. **Auto-mapper** — `exhaustive_when_fix.py` indexes every sealed type in the tree and adds missing
+   subtypes to the fork's `when` bodies that are nothing but `is Sealed.Sub -> "wire_value"` lines
+   (value = snake_case of the class name). Anything it can't read with certainty is left alone.
+2. **Compile** — `compile-gate.sh` compiles `:tasker-bridge` (main + unit tests) and `:composeApp`.
+3. **Gemini** — fixes what still fails, told never to add an `else` branch; then compile again.
 
-Both may only edit files the fork changes relative to the released commit, and an added `else ->`
-is rejected. A fix is never pushed to `tasker`: it goes to `pipeline/compile-fix-<version>` with a
-PR and a `COMPILE-REVIEW` issue, and the ledger rolls back. Merge the PR and the next tick re-syncs
-(the merge is then a no-op). Unfixable errors file `COMPILE-FAIL`. Tests:
+Both fixers may only edit files the fork changes relative to the released commit, and an added
+`else ->` is rejected. A fix is never pushed to `tasker`: it goes to `pipeline/compile-fix-<version>`
+with a PR and a `COMPILE-REVIEW` issue, and the ledger rolls back. Merge the PR and the next tick
+re-syncs (the merge is then a no-op). Unfixable errors file `COMPILE-FAIL`. Tests:
 `python3 -m unittest discover -s tools/pipeline/tests`.
 
 ## The ledger (`sync-state.json` on the `pipeline-state` branch)

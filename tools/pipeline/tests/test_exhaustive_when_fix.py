@@ -5,7 +5,25 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 
-from exhaustive_when_fix import Site, apply, parse_sites, snake_case  # noqa: E402
+from exhaustive_when_fix import run, sealed_subtypes, snake_case  # noqa: E402
+
+SEALED = """package lib
+
+sealed class UserFacingError {
+    abstract val message: String
+
+    data class FailedToScan(override val message: String) : UserFacingError()
+    data class FailedToInstallLanguagePack(override val message: String) : UserFacingError()
+    data class MissingCompanionApp(
+        override val message: String,
+        val appName: String,
+    ) : UserFacingError()
+    class Helper(val e: UserFacingError) : Other()
+    companion object {
+        class NotASubtype : UserFacingError()
+    }
+}
+"""
 
 COLLECTOR = """class C {
     fun f(error: UserFacingError) = mapOf(
@@ -17,7 +35,12 @@ COLLECTOR = """class C {
     )
 }
 """
-WHEN_COL = COLLECTOR.splitlines()[2].index("when") + 1
+
+ADDED = (
+    '            is UserFacingError.MissingCompanionApp -> "missing_companion_app"\n'
+    '            is UserFacingError.FailedToInstallLanguagePack -> "failed_to_install_language_pack"\n'
+    "        },\n"
+)
 
 
 class SnakeCaseTest(unittest.TestCase):
@@ -29,77 +52,79 @@ class SnakeCaseTest(unittest.TestCase):
         self.assertEqual("failed_to_download_pbw", snake_case("FailedToDownloadPbw"))
 
 
-class ParseTest(unittest.TestCase):
-    def test_parses_and_dedupes_repeated_gradle_errors(self):
+class SealedIndexTest(unittest.TestCase):
+    def test_direct_nested_subtypes_only(self):
+        self.assertEqual(
+            {"UserFacingError": ["FailedToScan", "FailedToInstallLanguagePack", "MissingCompanionApp"]},
+            sealed_subtypes(SEALED),
+        )
+
+    def test_sealed_interface_and_objects(self):
+        source = "sealed interface S {\n    data object A : S\n    object B : S, Other\n}\n"
+        self.assertEqual({"S": ["A", "B"]}, sealed_subtypes(source))
+
+    def test_braces_in_strings_and_comments_are_ignored(self):
+        source = 'sealed class S {\n    // }\n    val x = "}"\n    class A : S()\n}\n'
+        self.assertEqual({"S": ["A"]}, sealed_subtypes(source))
+
+
+class RunTest(unittest.TestCase):
+    def run_fix(self, collector, sealed=(SEALED,), allowed=True):
         with tempfile.TemporaryDirectory() as root:
-            path = os.path.join(root, "a", "X.kt")
-            line = (f"e: file://{path}:60:41 'when' expression must be exhaustive. "
-                    "Add the 'is FailedToInstallLanguagePack' branch or an 'else' branch.")
-            sites = parse_sites(f"{line}\n> Task :x FAILED\n{line}\n", root)
-        self.assertEqual([Site("a/X.kt", 60, 41, ("is FailedToInstallLanguagePack",))], sites)
-
-    def test_parses_multiple_missing_branches(self):
-        line = ("e: file:///r/X.kt:1:2 'when' expression must be exhaustive. "
-                "Add the 'is A', 'is B' branches or an 'else' branch.")
-        self.assertEqual(("is A", "is B"), parse_sites(line, "/r")[0].missing)
-
-
-class ApplyTest(unittest.TestCase):
-    def run_fix(self, source, missing, line=3, col=WHEN_COL, allowed=True):
-        with tempfile.TemporaryDirectory() as root:
-            with open(os.path.join(root, "X.kt"), "w") as f:
-                f.write(source)
-            result = apply([Site("X.kt", line, col, missing)], {"X.kt"} if allowed else set(), root)
+            files = [(f"Sealed{i}.kt", text) for i, text in enumerate(sealed)] + [("X.kt", collector)]
+            for name, text in files:
+                with open(os.path.join(root, name), "w") as f:
+                    f.write(text)
+            result = run(root, {"X.kt"} if allowed else set())
             with open(os.path.join(root, "X.kt")) as f:
                 return result, f.read()
 
-    def test_inserts_qualified_branch_after_last_branch(self):
-        result, out = self.run_fix(COLLECTOR, ("is FailedToInstallLanguagePack",))
+    def test_inserts_missing_subtype_after_last_branch(self):
+        result, out = self.run_fix(COLLECTOR)
         self.assertEqual([], result.unfixable)
-        self.assertIn(
-            '            is UserFacingError.MissingCompanionApp -> "missing_companion_app"\n'
-            '            is UserFacingError.FailedToInstallLanguagePack -> "failed_to_install_language_pack"\n'
-            "        },\n",
-            out,
-        )
+        self.assertEqual(1, len(result.added))
+        self.assertIn(ADDED, out)
 
-    def test_inserts_several_branches(self):
-        result, out = self.run_fix(COLLECTOR, ("is A", "is B"))
-        self.assertEqual(2, len(result.added))
-        self.assertIn('is UserFacingError.A -> "a"\n            is UserFacingError.B -> "b"\n', out)
+    def test_is_idempotent(self):
+        _, once = self.run_fix(COLLECTOR)
+        result, twice = self.run_fix(once)
+        self.assertEqual([], result.added)
+        self.assertEqual(once, twice)
 
-    def test_refuses_files_outside_allowlist(self):
-        result, out = self.run_fix(COLLECTOR, ("is A",), allowed=False)
+    def test_leaves_files_outside_allowlist(self):
+        result, out = self.run_fix(COLLECTOR, allowed=False)
         self.assertEqual(COLLECTOR, out)
-        self.assertIn("not a fork-owned file", result.unfixable[0])
+        self.assertEqual([], result.added)
 
-    def test_refuses_non_type_branches(self):
-        result, out = self.run_fix(COLLECTOR, ("NEW_ENUM_VALUE",))
-        self.assertEqual(COLLECTOR, out)
-        self.assertEqual(1, len(result.unfixable))
-
-    def test_refuses_bodies_that_are_not_pure_string_maps(self):
+    def test_leaves_bodies_that_are_not_pure_string_maps(self):
         source = COLLECTOR.replace('-> "failed_to_scan"', "-> doSomething()")
-        result, out = self.run_fix(source, ("is A",))
+        result, out = self.run_fix(source)
+        self.assertEqual((source, []), (out, result.added))
+
+    def test_leaves_when_with_else(self):
+        source = COLLECTOR.replace("            // comment lines are fine\n", '            else -> "other"\n')
+        result, out = self.run_fix(source)
+        self.assertEqual((source, []), (out, result.added))
+
+    def test_leaves_unqualified_branches(self):
+        source = COLLECTOR.replace("is UserFacingError.", "is ")
+        result, out = self.run_fix(source)
+        self.assertEqual((source, []), (out, result.added))
+
+    def test_leaves_when_naming_types_outside_the_sealed_class(self):
+        source = COLLECTOR.replace("UserFacingError.FailedToScan", "UserFacingError.Unknown")
+        result, out = self.run_fix(source)
+        self.assertEqual((source, []), (out, result.added))
+
+    def test_ambiguous_sealed_names_are_left_alone(self):
+        result, out = self.run_fix(COLLECTOR, sealed=(SEALED, SEALED.replace("package lib", "package other")))
+        self.assertEqual((COLLECTOR, []), (out, result.added))
+
+    def test_reports_wire_value_collision(self):
+        source = COLLECTOR.replace('"missing_companion_app"', '"failed_to_install_language_pack"')
+        result, out = self.run_fix(source)
         self.assertEqual(source, out)
-        self.assertIn("not purely", result.unfixable[0])
-
-    def test_refuses_wire_value_collisions(self):
-        result, out = self.run_fix(COLLECTOR, ("is FailedToScan",))
-        self.assertEqual(COLLECTOR, out)
         self.assertIn("already used", result.unfixable[0])
-
-    def test_refuses_position_not_at_when(self):
-        result, out = self.run_fix(COLLECTOR, ("is A",), col=1)
-        self.assertEqual(COLLECTOR, out)
-        self.assertIn("does not point at", result.unfixable[0])
-
-    def test_braces_in_strings_do_not_confuse_body_detection(self):
-        source = COLLECTOR.replace('"failed_to_scan"', '"failed_to_scan"').replace(
-            "// comment lines are fine", '// a "}" in a comment'
-        )
-        result, _ = self.run_fix(source, ("is A",))
-        self.assertEqual([], result.unfixable)
 
 
 if __name__ == "__main__":
