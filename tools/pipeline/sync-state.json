@@ -13,7 +13,8 @@
   },
   "build_strikes": [
     "1.14.0.1",
-    "1.15.0.1"
+    "1.15.0.1",
+    "1.17.0.1"
   ],
   "cutoff": {
     "branch_head_position": 2524,
@@ -41,7 +42,7 @@
     "version": "1.17.0.1"
   },
   "last_synced_cutoff": "89f31dca3fd344ae9923fe9ca2f27b0f1f8a0230",
-  "last_synced_tasker": "17f2434164a5deab3116e3e9d5901f8ae41e4a40",
+  "last_synced_tasker": "45c37397e99b40c6855e69b939db8477f2c5d2c0",
   "last_synced_version": "1.17.0.1",
   "plugin_readiness": {
     "g11_issue_255": "OPEN/0",
@@ -79,6 +80,6 @@
     "last_synced_version": "1.15.0.1"
   },
   "run_url": "https://github.com/nbetcher/mobileapp/actions/runs/42162942922",
-  "status": "merging",
-  "updated_at": "2026-11-06T15:34:31Z"
+  "status": "build-failed",
+  "updated_at": "2026-11-06T15:44:38Z"
 }
