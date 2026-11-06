@@ -122,8 +122,10 @@ jobs:
             - Group bullets under bold labels: **New**, **Improved**, **Fixed**, and
               **Index (ring)** for Index/ring/notes changes. Skip empty groups.
             - At most 15 bullets in total, each one short plain-English sentence about
-              what the user notices. Merge related items. Prefer upstream's changelog
-              wording when it covers a commit.
+              what the user notices. Merge related items.
+            - Explain or drop jargon: say what an item means for the user instead of
+              naming internals (e.g. CDM, PKJS, MCP, OTA, WorkManager, STT, webhook
+              HMAC). Leave out items you cannot explain from the file.
             - Name the platform (Android / iOS) only when a change affects just one.
             - Leave out internal work (CI, refactors, logging, tests, dependency bumps)
               unless it fixes something users would notice.
