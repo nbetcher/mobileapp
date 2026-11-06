@@ -128,7 +128,7 @@ def changelog(verbose=False):
                 # dedupe across tables; keep the entry with the newer date
                 if ver in seen and seen[ver]["date"] >= date:
                     continue
-                seen[ver] = {"version": ver, "date": date, "items": items}
+                seen[ver] = {"version": ver, "date": date, "items": items, "notes": notes}
     out = sorted(seen.values(), key=lambda r: r["date"], reverse=True)
     if not out:
         raise SystemExit("ERROR: no changelog rows parsed from any table")

@@ -65,6 +65,11 @@ string the pipeline records as `last_synced_version`.
 9. **Build** via `android-release.yml` → `Pebble_<version>-<commit8>-<counter>.apk`, signed.
 10. **Finalize** — attach the APK + `.sha256` on success; on failure delete the **release**, keep
    the **tag**, and strike the version.
+11. **Release notes** (`release-notes.yml`) — add *What's new from upstream*: a Gemini summary of
+   upstream's changelog entries and commits since the previous published release
+   (`release_changes.py`), with both in collapsible detail below it. Without a usable summary the
+   changelog is shown as-is. Dispatch `release-notes.yml` by hand to rewrite existing releases
+   (blank `tags` = all); re-running replaces the section.
 
 ## Merge tiers
 

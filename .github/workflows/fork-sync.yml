@@ -1417,3 +1417,16 @@ jobs:
             echo "- Tag: \`$TAG\` $([ "$BUILD_RESULT" = "success" ] && echo "(release published)" || echo "(release deleted, tag kept)")"
             echo "- Strikes: ${{ steps.ledger.outputs.strike_count }}/3"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ===========================================================================
+  # NOTES — "What's new from upstream", after finalize has written the
+  # Download stanza (it rewrites the body below the build placeholder).
+  # ===========================================================================
+  notes:
+    needs: [sync, build, finalize]
+    if: always() && needs.build.result == 'success' && needs.finalize.result != 'skipped'
+    uses: ./.github/workflows/release-notes.yml
+    with:
+      tag: ${{ needs.sync.outputs.tag }}
+      model: ${{ inputs.model }}
+    secrets: inherit
