@@ -5,7 +5,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 
 from release_changes import (  # noqa: E402
-    END, START, changelog_entries, format_notes, previous_release, render_section, splice, usable_summary,
+    DETAILS_END, DETAILS_START, END, START, changelog_entries, format_notes, previous_release, render_section, splice, usable_summary,
 )
 
 
@@ -71,11 +71,18 @@ class SectionTest(unittest.TestCase):
 
 
 class SpliceTest(unittest.TestCase):
-    BODY = "Intro\n\n| Upstream cutoff | `abc` |\n\n### Download\n\napk\n"
+    BODY = "Intro\n\n| | |\n|---|---|\n| Upstream cutoff | `abc` |\n\n### Download\n\napk\n"
 
-    def test_inserts_before_download(self):
-        out = splice(self.BODY, "S1")
-        self.assertIn(f"{START}\nS1\n{END}\n\n### Download", out)
+    def test_changes_first_download_next_table_last(self):
+        self.assertEqual(
+            f"Intro\n\n{START}\nS1\n{END}\n\n### Download\n\napk\n\n"
+            f"{DETAILS_START}\n### Build details\n\n| | |\n|---|---|\n| Upstream cutoff | `abc` |\n{DETAILS_END}\n",
+            splice(self.BODY, "S1"),
+        )
+
+    def test_rewrites_bodies_in_the_old_layout(self):
+        old = f"Intro\n\n| | |\n|---|---|\n| Upstream cutoff | `abc` |\n\n{START}\nS0\n{END}\n\n### Download\n\napk\n"
+        self.assertEqual(splice(self.BODY, "S1"), splice(old, "S1"))
 
     def test_replaces_an_earlier_section(self):
         out = splice(splice(self.BODY, "S1"), "S2")
@@ -86,6 +93,9 @@ class SpliceTest(unittest.TestCase):
 
     def test_appends_when_there_is_no_download_heading(self):
         self.assertTrue(splice("Intro\n", "S1").endswith(f"{START}\nS1\n{END}\n"))
+
+    def test_still_finds_the_cutoff_after_the_table_moves(self):
+        self.assertIn("| Upstream cutoff | `abc` |", splice(splice(self.BODY, "S1"), "S2"))
 
 
 if __name__ == "__main__":

@@ -28,6 +28,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 START = "<!-- upstream-changes:start -->"
 END = "<!-- upstream-changes:end -->"
+DETAILS_START = "<!-- build-details:start -->"
+DETAILS_END = "<!-- build-details:end -->"
 TAG_RE = re.compile(r"^v(\d+(?:\.\d+)+)-tasker\.(\d+)$")
 CUTOFF_RE = re.compile(r"Upstream cutoff \| `([0-9a-f]{7,40})`")
 UPSTREAM_COMMIT_URL = "https://github.com/coredevices/mobileapp/commit/"
@@ -142,16 +144,43 @@ def render_commits(commits: list[tuple[str, str, str]] | None) -> str:
     return "\n".join(out)
 
 
+def _cut(body: str, start: str, end: str) -> tuple[str, str | None]:
+    """Remove the marked block from body; return (rest, block contents)."""
+    if start not in body or end not in body:
+        return body, None
+    head, _, rest = body.partition(start)
+    inner, _, tail = rest.partition(end)
+    return head.rstrip("\n") + "\n\n" + tail.lstrip("\n"), inner
+
+
+def _cut_table(body: str) -> tuple[str, str | None]:
+    """Remove the first markdown table from body; return (rest, table)."""
+    lines = body.splitlines(keepends=True)
+    first = next((i for i, l in enumerate(lines) if l.startswith("|")), None)
+    if first is None:
+        return body, None
+    last = first
+    while last + 1 < len(lines) and lines[last + 1].startswith("|"):
+        last += 1
+    rest = "".join(lines[:first]).rstrip("\n") + "\n\n" + "".join(lines[last + 1 :]).lstrip("\n")
+    return rest, "".join(lines[first : last + 1])
+
+
 def splice(body: str, section: str) -> str:
+    """Upstream changes before "### Download"; the build-details table moved to the end."""
+    body, details = _cut(body, DETAILS_START, DETAILS_END)
+    if details is not None:
+        details = "\n".join(l for l in details.strip().splitlines() if l.startswith("|"))
+    else:
+        body, details = _cut_table(body)
+    body, _ = _cut(body, START, END)
     block = f"{START}\n{section.strip()}\n{END}\n"
-    if START in body and END in body:
-        head, _, rest = body.partition(START)
-        _, _, tail = rest.partition(END)
-        return head + block.rstrip("\n") + tail
     i = body.find("### Download")
-    if i >= 0:
-        return body[:i] + block + "\n" + body[i:]
-    return body.rstrip("\n") + "\n\n" + block
+    body = body[:i] + block + "\n" + body[i:] if i >= 0 else body.rstrip("\n") + "\n\n" + block
+    if details:
+        body = (body.rstrip("\n") + f"\n\n{DETAILS_START}\n### Build details\n\n"
+                f"{details.strip()}\n{DETAILS_END}\n")
+    return body
 
 
 def usable_summary(text: str) -> bool:
