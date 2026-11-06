@@ -62,6 +62,7 @@ class SystemEventCollector(
                             is UserFacingError.FailedToRemovePbwFromLocker -> "failed_to_remove_pbw"
                             is UserFacingError.FailedToSideloadApp -> "failed_to_sideload_app"
                             is UserFacingError.FailedToScan -> "failed_to_scan"
+                            is UserFacingError.FailedToInstallLanguagePack -> "failed_to_install_language_pack"
                             is UserFacingError.MissingCompanionApp -> "missing_companion_app"
                         },
                         "message" to error.message,
