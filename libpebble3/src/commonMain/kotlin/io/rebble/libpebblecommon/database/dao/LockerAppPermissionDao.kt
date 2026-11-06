@@ -29,13 +29,17 @@ interface LockerAppPermissionDao {
     @Query("DELETE FROM AppPermission WHERE appUuid = :appUuid")
     suspend fun deleteByAppUuid(appUuid: Uuid)
 
+    @Query("DELETE FROM AppPermission WHERE appUuid = :appUuid AND permission IN (:permissions)")
+    suspend fun deleteByAppUuidAndPermissions(appUuid: Uuid, permissions: List<String>)
+
     @Query("DELETE FROM AppPermission WHERE appUuid NOT IN (SELECT id FROM LockerEntryEntity WHERE deleted = 0)")
     suspend fun deleteForRemovedApps()
 
     @Query("SELECT * FROM AppPermission WHERE appUuid = :appUuid")
     suspend fun getByAppUuid(appUuid: Uuid): List<LockerAppPermission>
 
-    @Query("SELECT * FROM AppPermission WHERE appUuid = :appUuid")
+    // A decision replaces its row, so without an order it would move to the end.
+    @Query("SELECT * FROM AppPermission WHERE appUuid = :appUuid ORDER BY requestedAtMs, permission")
     fun flowByAppUuid(appUuid: Uuid): Flow<List<LockerAppPermission>>
 
     @Query("SELECT * FROM AppPermission ORDER BY requestedAtMs")

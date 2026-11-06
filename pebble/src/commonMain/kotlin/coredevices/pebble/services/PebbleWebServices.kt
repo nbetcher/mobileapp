@@ -42,8 +42,12 @@ import io.ktor.serialization.ContentConvertException
 import io.rebble.libpebblecommon.connection.FirmwareUpdateCheckResult
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.connection.WebServices
+import io.rebble.libpebblecommon.disk.pbw.DiskUtil
 import io.rebble.libpebblecommon.locker.AppType
 import io.rebble.libpebblecommon.metadata.WatchType
+import io.rebble.libpebblecommon.permissions.isLegacy
+import io.rebble.libpebblecommon.plugin.PluginManifest
+import io.rebble.libpebblecommon.plugin.PluginMetadata
 import io.rebble.libpebblecommon.plugin.PluginPermission
 import io.rebble.libpebblecommon.services.WatchInfo
 import io.rebble.libpebblecommon.web.LockerAddResponse
@@ -74,6 +78,7 @@ import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.descriptors.nullable
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonNull
@@ -592,6 +597,8 @@ data class StoreSearchResult(
     val iconImage: String,
     @SerialName("list_image")
     val listImage: String,
+    @SerialName("icon_tintable")
+    val iconTintable: Boolean = false,
     val title: String,
     val type: String,
     val uuid: String,
@@ -823,6 +830,8 @@ data class StoreApplication(
     val links: StoreLinks,
     @SerialName("list_image")
     val listImage: Map<String, String>,
+    @SerialName("icon_tintable")
+    val iconTintable: Boolean = false,
     @SerialName("published_date")
     @Serializable(with = PublishedDateSerializer::class)
     val publishedDate: Instant?,
@@ -837,6 +846,24 @@ data class StoreApplication(
     val visible: Boolean,
     val website: String?,
     val contactable: Boolean = false,
+    /** Keyed by platform codename; only platforms with enough telemetry are present. */
+    @SerialName("battery_impact")
+    val batteryImpact: Map<String, StoreBatteryImpact>? = null,
+)
+
+/** Levels are relative to TicToc: negligible / small / medium / large. */
+@Serializable
+data class StoreBatteryImpact(
+    val level: String,
+    val modes: List<StoreBatteryImpactMode> = emptyList(),
+    @SerialName("app_version")
+    val appVersion: String? = null,
+)
+
+@Serializable
+data class StoreBatteryImpactMode(
+    val mode: String,
+    val level: String,
 )
 
 @Serializable
@@ -961,6 +988,15 @@ fun StoreApplication.asLockerEntryPlatform(
     )
 }
 
+fun StoreApplication.pluginMetadata(): PluginMetadata? {
+    val raw = plugin?.manifest ?: return null
+    if (isLegacy(manifestVersion) || uuid == null) return null
+    val manifest = runCatching { DiskUtil.pbwJson.decodeFromJsonElement(PluginManifest.serializer(), raw) }
+        .onFailure { logger.w(it) { "unreadable plugin manifest for $uuid" } }
+        .getOrNull() ?: return null
+    return PluginMetadata(Uuid.parse(uuid), title, manifest.description, manifest.sources, manifest.actions, manifest.script)
+}
+
 fun StoreApplication.toLockerEntry(sourceUrl: String, timelineToken: String?): LockerEntry? {
     // A plugin-only app has no binaries, so no hardware_platforms: build every platform from the
     // fallbacks, which is also where the locker gets its description and images.
@@ -1006,6 +1042,7 @@ fun StoreApplication.toLockerEntry(sourceUrl: String, timelineToken: String?): L
         manifestVersion = app.manifestVersion,
         pluginManifest = app.plugin?.manifest,
         configPage = app.plugin?.configPage,
+        iconTintable = app.iconTintable,
         hardwarePlatforms = buildList {
             var fallbackFlags = 0
             if (app.type == AppType.Watchface.code) {

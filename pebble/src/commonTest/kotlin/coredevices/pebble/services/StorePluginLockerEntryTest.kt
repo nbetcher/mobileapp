@@ -1,9 +1,12 @@
 package coredevices.pebble.services
 
+import io.rebble.libpebblecommon.locker.asEntity
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class StorePluginLockerEntryTest {
@@ -33,11 +36,54 @@ class StorePluginLockerEntryTest {
     }
 
     @Test
+    fun aListingsManifestSaysWhatThePluginWillOffer() {
+        val manifest = """"manifest_version":2,"plugin":{"config_page":"config.html","manifest":{"description":"Notes",
+            "actions":[{"name":"create_note"}],"sources":[{"category":"notes","items":["configured"]}]}},"""
+        val app = json.decodeFromString(StoreApplication.serializer(), stocks.replace(""""title":"Stocks",""", manifest + """"title":"Stocks","""))
+
+        val metadata = assertNotNull(app.pluginMetadata())
+        assertEquals("2c4b7f10-9a3d-4e6b-8f21-5d0c7e9a1b34", metadata.pluginUuid.toString())
+        assertEquals("Stocks", metadata.name)
+        assertEquals(listOf("create_note"), metadata.actions.map { it.name })
+        assertTrue(metadata.serves("notes", "configured"))
+    }
+
+    @Test
+    fun listingsWithoutALoadableManifestOfferNothing() {
+        assertNull(json.decodeFromString(StoreApplication.serializer(), stocks).pluginMetadata())
+        val legacy = stocks.replace(""""title":"Stocks",""", """"plugin":{"manifest":{"actions":[{"name":"create_note"}]}},"title":"Stocks",""")
+        assertNull(json.decodeFromString(StoreApplication.serializer(), legacy).pluginMetadata())
+    }
+
+    @Test
     fun aPluginWithAConfigPageIsConfigurable() {
         val withConfigPage = stocks.replace(""""title":"Stocks",""", """"plugin":{"config_page":"config.html"},"title":"Stocks",""")
         fun configurable(app: String) = json.decodeFromString(StoreApplication.serializer(), app)
             .toLockerEntry(sourceUrl = "https://store/api", timelineToken = null)!!.isConfigurable
         assertFalse(configurable(stocks))
         assertTrue(configurable(withConfigPage))
+    }
+
+    @Test
+    fun anIconIsOnlyTintableWhenTheStoreSaysSo() {
+        fun tintable(app: String) = json.decodeFromString(StoreApplication.serializer(), app).iconTintable
+        val tintableStocks = stocks.replace(""""title":"Stocks",""", """"icon_tintable":true,"title":"Stocks",""")
+        assertFalse(tintable(stocks))
+        assertTrue(tintable(tintableStocks))
+        val entity = json.decodeFromString(StoreApplication.serializer(), tintableStocks)
+            .toLockerEntry(sourceUrl = "https://store/api", timelineToken = null)!!.asEntity(0)
+        assertTrue(entity.platforms.all { it.listImageTintable })
+    }
+
+    @Test
+    fun aSearchResultIconIsOnlyTintableWhenTheStoreSaysSo() {
+        val result = """{"author":"Pebble","category":"Finance & News","compatibility":{"aplite":$watch,"basalt":$watch,
+            "chalk":$watch,"diorite":$watch,"emery":$watch,"android":{"supported":true},"ios":{"supported":true}},
+            "description":"Share prices.","hearts":0,"icon_image":"","list_image":"https://list","title":"Stocks",
+            "type":"plugin","uuid":"2c4b7f10-9a3d-4e6b-8f21-5d0c7e9a1b34","id":"730a1d95229d42e9b66098cb",
+            "screenshot_images":[],"asset_collections":[]}"""
+        fun tintable(json: String) = this.json.decodeFromString(StoreSearchResult.serializer(), json).iconTintable
+        assertFalse(tintable(result))
+        assertTrue(tintable(result.replace(""""title":"Stocks",""", """"icon_tintable":true,"title":"Stocks",""")))
     }
 }

@@ -3,6 +3,7 @@ package io.rebble.libpebblecommon.services
 import kotlin.math.abs
 import io.rebble.libpebblecommon.automation.TimeSyncResult
 import co.touchlab.kermit.Logger
+import io.rebble.libpebblecommon.WatchConfigFlow
 import io.rebble.libpebblecommon.connection.ConnectedPebble
 import io.rebble.libpebblecommon.connection.PebbleProtocolHandler
 import io.rebble.libpebblecommon.connection.PhoneCapabilities
@@ -55,7 +56,8 @@ class SystemService(
     private val protocolHandler: PebbleProtocolHandler,
     private val scope: ConnectionCoroutineScope,
     private val phoneCapabilities: PhoneCapabilities,
-    private val platformFlags: PlatformFlags
+    private val platformFlags: PlatformFlags,
+    private val watchConfig: WatchConfigFlow,
 ) : ProtocolService,
     ConnectedPebble.Debug, ConnectedPebble.Time {
     private val logger = Logger.withTag("SystemService")
@@ -102,6 +104,11 @@ class SystemService(
         return WatchColor.fromProtocolNumber(color)
     }
 
+    private fun capabilitiesToSend(): List<ProtocolCapsFlag> {
+        val caps = phoneCapabilities.capabilities.toList()
+        return if (watchConfig.value.notificationWindowState) caps else caps - ProtocolCapsFlag.SupportsNotificationWindowState
+    }
+
     suspend fun sendPhoneVersionResponse() {
         // TODO put all this stuff in libpebble config
         protocolHandler.send(
@@ -113,7 +120,7 @@ class SystemService(
                 4u,
                 4u,
                 2u,
-                ProtocolCapsFlag.makeFlags(phoneCapabilities.capabilities.toList())
+                ProtocolCapsFlag.makeFlags(capabilitiesToSend())
             )
         )
     }

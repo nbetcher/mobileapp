@@ -239,6 +239,7 @@ class RealPebbleConnector(
         firmwareUpdateManager.init(watchInfo)
         // BRIDGE-TAP: automation-services
         automationServices.init(watchInfo)
+        languagePackInstaller.init(watchInfo)
         logDumpService.init(watchInfo.capabilities.contains(ProtocolCapsFlag.SupportsInfiniteLogDump))
 
         val ignoreMissingPrfOnThisDevice =
@@ -258,6 +259,7 @@ class RealPebbleConnector(
 
             else -> false
         }
+        devConnectionManager.init()
         if (recoveryMode) {
             _state.value = Connected.ConnectedInPrf(
                 identifier = identifier,
