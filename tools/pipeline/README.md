@@ -54,7 +54,8 @@ string the pipeline records as `last_synced_version`.
    the tag was pushed), the version is re-synced once, forward, to the tag.
 5. **Merge** the cutoff into `tasker`, in three tiers — see below.
 6. **Tap-drift check** (`tap-check.sh`) — greps the `// BRIDGE-TAP: <id>` anchors.
-7. **Pin `.github/workflows` back to our side**, then **push** `tasker`, and best-effort sync
+7. **Pin `.github/workflows` back to our side**, then **compile** the fork's modules — see
+   *Compile gate* below — and only then **push** `tasker`, and best-effort sync
    `release-track` + the `master` mirror. `GITHUB_TOKEN` cannot push any ref that creates or
    updates workflow files — no `permissions:` key grants it — so the merge's workflow changes are
    dropped (they're disabled in this fork regardless), and the two mirror refs, which point at raw
@@ -77,6 +78,22 @@ string the pipeline records as `last_synced_version`.
    `--yolo`, so it is treated as untrusted input.
 3. **Abort** — merge reverted, remote restored, ledger rolled back, `MERGE-FAIL` issue filed with
    the rr-cache preserved as a run artifact. The next tick retries the same version.
+
+## Compile gate
+
+A clean merge can still break the fork: a new subtype of an upstream sealed class makes the fork's
+exhaustive `when` maps fail to compile. `compile-gate.sh` compiles `:tasker-bridge` (main + unit
+tests) and `:composeApp` right after the merge, before anything is pushed or tagged. On failure:
+
+1. **Auto-mapper** — `exhaustive_when_fix.py` adds missing `is X -> "x"` branches (snake_case of the
+   class name) to `when` bodies that are nothing but such lines. Anything else is left alone.
+2. **Gemini** — fixes what's left, told never to add an `else` branch.
+
+Both may only edit files the fork changes relative to the released commit, and an added `else ->`
+is rejected. A fix is never pushed to `tasker`: it goes to `pipeline/compile-fix-<version>` with a
+PR and a `COMPILE-REVIEW` issue, and the ledger rolls back. Merge the PR and the next tick re-syncs
+(the merge is then a no-op). Unfixable errors file `COMPILE-FAIL`. Tests:
+`python3 -m unittest discover -s tools/pipeline/tests`.
 
 ## The ledger (`sync-state.json` on the `pipeline-state` branch)
 

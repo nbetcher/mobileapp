@@ -108,6 +108,7 @@ permissions:
   contents: write   # push tasker/master/release-track, tags, releases
   issues: write     # failure issues (issue.sh)
   actions: write    # disable upstream CI; self-disable on 3 strikes
+  pull-requests: write  # compile-fix review PRs
 
 concurrency:
   group: fork-sync
@@ -689,6 +690,204 @@ jobs:
           git add -A .github/workflows
           git commit -m "pipeline: keep our .github/workflows (GITHUB_TOKEN cannot push workflow changes)"
 
+      # =======================================================================
+      # COMPILE GATE — a textually clean merge can still break the fork: a new
+      # subtype of an upstream sealed class turns our exhaustive `when` maps into
+      # compile errors that only surface in the build job, after the tag and
+      # release exist, and cost a strike. Compile the fork's code here instead:
+      #   1. exhaustive_when_fix.py adds missing `is X -> "x"` wire mappings
+      #   2. Gemini fixes whatever is left, restricted to files the fork changes
+      #   3. anything fixed is pushed to a review branch + PR, never to tasker;
+      #      the ledger rolls back and the next tick re-syncs once it is merged
+      # =======================================================================
+      - name: Set up JDK 17
+        if: steps.decide.outputs.proceed == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        if: steps.decide.outputs.proceed == 'true'
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
+
+      - name: Cache Gradle
+        if: steps.decide.outputs.proceed == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: android-release-${{ runner.os }}-${{ hashFiles('gradle/**', 'gradlew*', 'gradle.properties', '*.gradle*') }}
+          restore-keys: |
+            android-release-${{ runner.os }}-
+
+      - name: Compile gate
+        id: compile
+        if: steps.decide.outputs.proceed == 'true'
+        env:
+          GITHUB_ACTOR: ${{ secrets.READ_PACKAGES_ACTOR }}
+          GITHUB_TOKEN: ${{ secrets.READ_PACKAGES_TOKEN }}
+          CUT: ${{ steps.cutoff.outputs.sha }}
+        run: |
+          set -eu
+          # Only files the fork changes relative to the released commit may be
+          # edited by either fixer; upstream's own code already compiles upstream.
+          git diff --name-only "$CUT" HEAD > /tmp/pipeline-fork-files.txt
+          if sh tools/pipeline/lib/compile-gate.sh /tmp/pipeline-compile.log; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Compile gate::the merged tree does not compile; trying the fixers"
+          fi
+
+      - name: Auto-map new sealed subtypes
+        id: autofix
+        if: steps.compile.outputs.ok == 'false'
+        env:
+          GITHUB_ACTOR: ${{ secrets.READ_PACKAGES_ACTOR }}
+          GITHUB_TOKEN: ${{ secrets.READ_PACKAGES_TOKEN }}
+        run: |
+          set -eu
+          rc=0
+          python3 -I tools/pipeline/lib/exhaustive_when_fix.py \
+            --log /tmp/pipeline-compile.log --allow /tmp/pipeline-fork-files.txt \
+            --report /tmp/pipeline-autofix.txt || rc=$?
+          case "$rc" in
+            0) ;;
+            3) echo "ok=false" >> "$GITHUB_OUTPUT"; exit 0 ;;
+            *) exit "$rc" ;;
+          esac
+          if sh tools/pipeline/lib/compile-gate.sh /tmp/pipeline-compile.log; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Stage compile errors for Gemini
+        if: >-
+          steps.compile.outputs.ok == 'false' && steps.autofix.outputs.ok != 'true'
+          && inputs.no_ai_merge != true
+        run: |
+          # The CLI's file tools are confined to the workspace. Never staged:
+          # the commit below adds fork files by name only.
+          grep -E '^e: ' /tmp/pipeline-compile.log | sort -u > .pipeline-compile-errors.txt || true
+          tail -n 200 /tmp/pipeline-compile.log > .pipeline-compile-tail.txt
+          cp /tmp/pipeline-fork-files.txt .pipeline-fork-files.txt
+
+      - name: Fix compile errors with Gemini
+        id: aicompile
+        if: >-
+          steps.compile.outputs.ok == 'false' && steps.autofix.outputs.ok != 'true'
+          && inputs.no_ai_merge != true
+        continue-on-error: true
+        uses: google-github-actions/run-gemini-cli@f77273f4c914e4bf38440cf36a0369cb64a37489  # v0.1.22
+        env:
+          GITHUB_TOKEN: ""
+          GH_TOKEN: ""
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          gemini_model: ${{ inputs.model || 'gemini-3.6-flash' }}
+          prompt: |
+            You are on an ephemeral CI runner, in a git repository where a newer upstream
+            release of coredevices/mobileapp has just been merged cleanly into a fork that
+            adds a Tasker automation bridge. The merged tree no longer compiles.
+
+            The Kotlin compiler errors are in .pipeline-compile-errors.txt (the end of the
+            Gradle log is in .pipeline-compile-tail.txt). Fix them.
+
+            Rules:
+            - Edit ONLY files listed in .pipeline-fork-files.txt. Upstream owns everything
+              else and it already compiles upstream; adapt the fork's code to upstream's new
+              API, never the other way round.
+            - Do NOT run git commit/merge/rebase/reset/checkout, do NOT push, and do NOT run
+              Gradle (it cannot authenticate in this step).
+            - For a non-exhaustive `when`, add the missing branches explicitly. Never add an
+              `else` branch: exhaustiveness is how the fork notices upstream additions.
+            - Where a `when` maps types to wire strings, use the snake_case of the class name
+              (FailedToInstallLanguagePack -> "failed_to_install_language_pack") unless that
+              value is already used in the same `when`.
+            - Never drop a "// BRIDGE-TAP: <id>" anchor comment or its adjacent
+              AutomationNotificationHooks call.
+            - Make the smallest change that compiles. No refactors, no new comments.
+
+            Finish by reporting one line per edited file: path + what you changed.
+
+      - name: Verify compile fixes
+        id: compilefix
+        if: steps.compile.outputs.ok == 'false'
+        env:
+          GITHUB_ACTOR: ${{ secrets.READ_PACKAGES_ACTOR }}
+          GITHUB_TOKEN: ${{ secrets.READ_PACKAGES_TOKEN }}
+          GEMINI_SUMMARY: ${{ steps.aicompile.outputs.summary }}
+          AUTOFIX_OK: ${{ steps.autofix.outputs.ok }}
+          AI_OUTCOME: ${{ steps.aicompile.outcome }}
+        run: |
+          set -eu
+          rm -f .pipeline-compile-errors.txt .pipeline-compile-tail.txt .pipeline-fork-files.txt
+          printf '%s\n' "${GEMINI_SUMMARY:-}" > /tmp/pipeline-gemini-compile.log
+          fail() {
+            echo "result=failed" >> "$GITHUB_OUTPUT"
+            echo "$1" > /tmp/pipeline-compile-reason.txt
+            echo "::error title=Compile gate::$1"
+            exit 1
+          }
+
+          git diff --name-only HEAD > /tmp/pipeline-fixed-files.txt
+          [ -s /tmp/pipeline-fixed-files.txt ] || fail "no fixer changed anything"
+          if grep -vxFf /tmp/pipeline-fork-files.txt /tmp/pipeline-fixed-files.txt; then
+            fail "a fixer edited files outside the fork's patch surface (listed above)"
+          fi
+          if git diff -U0 HEAD | grep -E '^\+\s*else\s*->'; then
+            fail "a fixer added an 'else' branch"
+          fi
+
+          if [ "$AUTOFIX_OK" != "true" ]; then
+            [ "$AI_OUTCOME" = "success" ] || fail "Gemini step: $AI_OUTCOME"
+            sh tools/pipeline/lib/compile-gate.sh /tmp/pipeline-compile.log \
+              || fail "the tree still does not compile after the fixers"
+          fi
+
+          {
+            echo "pipeline: adapt the fork to upstream ${{ steps.cutoff.outputs.changelog_version }}"
+            echo
+            echo "The merge was textually clean but did not compile. Fixed by:"
+            [ -s /tmp/pipeline-autofix.txt ] && sed 's/^/  /' /tmp/pipeline-autofix.txt
+            [ "$AUTOFIX_OK" = "true" ] || echo "  Gemini (see the run's compile-gate transcript)"
+          } > /tmp/pipeline-compile-fix-msg.txt
+          xargs git add -- < /tmp/pipeline-fixed-files.txt
+          git commit -F /tmp/pipeline-compile-fix-msg.txt
+          echo "result=review" >> "$GITHUB_OUTPUT"
+
+      # Fixed or not, the merge never reaches tasker from this run: a fix lands on
+      # a review branch, and the failure path reverts and rolls the ledger back.
+      - name: Push compile fixes for review
+        id: review
+        if: steps.compilefix.outputs.result == 'review' && inputs.dry_run != true
+        env:
+          NEW_VERSION: ${{ steps.cutoff.outputs.changelog_version }}
+        run: |
+          set -eu
+          BRANCH="pipeline/compile-fix-${NEW_VERSION}"
+          git push --force origin "HEAD:refs/heads/${BRANCH}"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          URL="$(gh pr list --head "$BRANCH" --base "$TASKER_BRANCH" --state open --json url --jq '.[0].url // empty')"
+          if [ -z "$URL" ]; then
+            URL="$(gh pr create --head "$BRANCH" --base "$TASKER_BRANCH" \
+                     --title "Adapt the fork to upstream ${NEW_VERSION}" \
+                     --body-file /tmp/pipeline-compile-fix-msg.txt)" \
+              || URL="${GITHUB_SERVER_URL}/${GH_REPO}/compare/${TASKER_BRANCH}...${BRANCH}?expand=1"
+          fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Hold the sync for review
+        if: steps.compilefix.outputs.result == 'review'
+        run: |
+          echo "::error title=Compile fix needs review::merge ${{ steps.review.outputs.url || '(dry run: not pushed)' }} into ${TASKER_BRANCH}; the next tick then re-syncs"
+          exit 1
+
       # --- PUSH the merged branch + the synced refs. --------------------------
       - name: Push tasker, release-track and master
         id: push
@@ -907,6 +1106,65 @@ jobs:
             "Merge of upstream release $FAILED_VERSION failed" \
             /tmp/pipeline-merge-fail.md
 
+      - name: Open COMPILE issue
+        if: >-
+          failure()
+          && steps.compilefix.outcome != 'skipped'
+          && inputs.dry_run != true
+        env:
+          FAILED_VERSION: ${{ steps.cutoff.outputs.changelog_version }}
+          RESULT: ${{ steps.compilefix.outputs.result }}
+          REVIEW_URL: ${{ steps.review.outputs.url }}
+        run: |
+          set -eu
+          {
+            if [ "$RESULT" = "review" ]; then
+              echo "**Upstream \`$FAILED_VERSION\` merged cleanly but broke the fork's compile. The pipeline fixed it and is holding the sync for your review.**"
+              echo
+              echo "- Review and merge: ${REVIEW_URL:-push failed, see the run log}"
+              echo "- Once merged into \`$TASKER_BRANCH\`, the next tick re-syncs this version (the merge is then a no-op). To not wait:"
+              echo
+              echo '```sh'
+              echo "gh workflow run fork-sync.yml"
+              echo '```'
+              echo
+              echo "Check every new wire value: it becomes part of the automation contract."
+              echo
+              echo "### Commit message"
+              echo '```'
+              cat /tmp/pipeline-compile-fix-msg.txt
+              echo '```'
+            else
+              echo "**Upstream \`$FAILED_VERSION\` merged cleanly but the fork no longer compiles, and the fixers could not repair it.** The merge was reverted and the ledger rolled back."
+              echo
+              echo "- Reason: $(cat /tmp/pipeline-compile-reason.txt 2>/dev/null || echo unknown)"
+              [ -s /tmp/pipeline-autofix.txt ] && { echo; echo "### Auto-mapper"; echo '```'; cat /tmp/pipeline-autofix.txt; echo '```'; }
+              echo
+              echo "### Compiler errors"
+              echo '```'
+              grep -E '^e: ' /tmp/pipeline-compile.log 2>/dev/null | sort -u | head -n 60 || true
+              echo '```'
+            fi
+            if [ -s /tmp/pipeline-gemini-compile.log ] && [ -n "$(tr -d '[:space:]' < /tmp/pipeline-gemini-compile.log)" ]; then
+              echo
+              echo "### Gemini transcript (tail)"
+              echo '```'
+              tail -n 80 /tmp/pipeline-gemini-compile.log
+              echo '```'
+            fi
+            echo
+            echo "- Run: $RUN_URL"
+          } > /tmp/pipeline-compile-issue.md
+          if [ "$RESULT" = "review" ]; then
+            sh tools/pipeline/lib/issue.sh COMPILE-REVIEW \
+              "Upstream $FAILED_VERSION needs fork compile fixes: review the PR" \
+              /tmp/pipeline-compile-issue.md
+          else
+            sh tools/pipeline/lib/issue.sh COMPILE-FAIL \
+              "Upstream $FAILED_VERSION breaks the fork's compile" \
+              /tmp/pipeline-compile-issue.md
+          fi
+
       - name: Open RESOLVE FAIL issue
         if: failure() && steps.cutoff.outcome == 'failure'
         run: |
@@ -937,6 +1195,7 @@ jobs:
           && steps.ai.outcome != 'failure'
           && steps.verify.outcome != 'failure'
           && steps.tapcheck.outcome != 'failure'
+          && steps.compilefix.outcome == 'skipped'
         run: |
           sh tools/pipeline/lib/issue.sh PIPELINE-FAIL \
             "fork-sync failed in an unguarded step (see the run log)"
@@ -957,6 +1216,7 @@ jobs:
             echo "| Plugin readiness | ${{ steps.readiness.outcome == 'success' && format('{0} signal(s) changed', steps.readiness.outputs.changed) || 'probe step failed — see its log' }} |"
             echo "| Action | ${{ steps.decide.outputs.proceed == 'true' && 'sync' || 'up to date — no action' }} |"
             echo "| Merge | ${{ steps.merge.outputs.resolved_by || (steps.merge.outputs.conflicted == 'true' && 'gemini' || 'n/a') }} |"
+            echo "| Compile gate | ${{ steps.compile.outputs.ok == 'true' && 'passed' || (steps.compilefix.outputs.result == 'review' && format('fixed, held for review: {0}', steps.review.outputs.url || 'dry run')) || (steps.compile.outputs.ok == 'false' && 'failed') || 'n/a' }} |"
             echo "| Strikes | ${{ steps.ledger.outputs.strike_count }} (${{ steps.ledger.outputs.strikes || 'none' }}) |"
             echo "| Tag | \`${{ steps.release.outputs.tag || 'n/a' }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
