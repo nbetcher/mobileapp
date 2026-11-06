@@ -695,8 +695,9 @@ jobs:
       # subtype of an upstream sealed class turns our exhaustive `when` maps into
       # compile errors that only surface in the build job, after the tag and
       # release exist, and cost a strike. Instead, before anything is pushed:
-      #   1. exhaustive_when_fix.py adds new sealed subtypes to the fork's
-      #      `is X -> "x"` wire maps, from the source alone
+      #   1. post_merge_autofix.py adds new sealed subtypes to the fork's
+      #      `is X -> "x"` wire maps and restores imports upstream dropped that
+      #      fork code still uses, from the source alone
       #   2. compile the fork's modules
       #   3. Gemini fixes whatever still fails
       # The fixers may only touch files the fork changes relative to the released
@@ -727,16 +728,17 @@ jobs:
           restore-keys: |
             android-release-${{ runner.os }}-
 
-      - name: Auto-map new sealed subtypes
+      - name: Auto-fix known merge breakage
         id: autofix
         if: steps.decide.outputs.proceed == 'true'
         env:
           CUT: ${{ steps.cutoff.outputs.sha }}
+          PRE: ${{ steps.merge.outputs.pre_merge }}
         run: |
           set -eu
           git diff --name-only "$CUT" HEAD > /tmp/pipeline-fork-files.txt
           rc=0
-          python3 -I tools/pipeline/lib/exhaustive_when_fix.py \
+          python3 -I tools/pipeline/lib/post_merge_autofix.py --base "$PRE" \
             --allow /tmp/pipeline-fork-files.txt --report /tmp/pipeline-autofix.txt || rc=$?
           case "$rc" in
             0) echo "changed=true" >> "$GITHUB_OUTPUT" ;;

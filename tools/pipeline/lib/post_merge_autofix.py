@@ -1,25 +1,32 @@
 #!/usr/bin/env python3
-"""Add new upstream sealed subtypes to fork-owned `when` -> wire-string maps.
+"""Deterministic fixes for fork code that a textually clean upstream merge broke.
 
-Indexes every `sealed class`/`sealed interface` in the tree with the subtypes nested directly
+Only files listed in ALLOWLIST (the fork's patch surface) are edited.
+
+1. Sealed subtypes: indexes every `sealed class`/`sealed interface` in the tree with the subtypes nested directly
 inside it, then scans the allowed (fork-owned) files for `when` bodies made of nothing but
 `is Sealed.Sub -> "snake_case"` lines. Subtypes such a `when` lacks are inserted with a
 snake_case wire value derived from the class name. Anything it cannot read with certainty
 is left for the compiler to report.
 
+2. Dropped imports: an import the merge removed (upstream stopped using it) is restored when the
+   file still uses that name and no other import now claims it.
+
 Usage:
-  exhaustive_when_fix.py --allow ALLOWLIST [--root DIR] [--report FILE]
+  post_merge_autofix.py --allow ALLOWLIST --base PRE_MERGE_REV [--root DIR] [--report FILE]
 
 ALLOWLIST is a file of repo-relative paths that may be edited, one per line.
 
-Exit codes: 0 at least one branch added, 3 nothing to add, 1 usage/IO error.
+Exit codes: 0 something was fixed, 3 nothing to fix, 1 usage/IO error.
 """
 from __future__ import annotations
 
 import argparse
 import os
 import re
+import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 BRANCH_RE = re.compile(r'^(?P<indent>\s*)is (?P<type>[A-Za-z_][A-Za-z0-9_.]*) -> "(?P<value>[a-z0-9_]+)",?\s*$')
@@ -27,6 +34,7 @@ IGNORABLE_RE = re.compile(r"^\s*(//.*)?$")
 SEALED_RE = re.compile(r"\bsealed\s+(?:class|interface)\s+([A-Za-z_]\w*)")
 DECL_RE = re.compile(r"\b(?:class|object|interface)\s+([A-Za-z_]\w*)")
 WHEN_RE = re.compile(r"\bwhen\b")
+IMPORT_RE = re.compile(r"^import\s+([\w.]+)(?:\s+as\s+(\w+))?\s*;?\s*$")
 SKIP_DIRS = {".git", "build", ".gradle", "node_modules", ".idea"}
 
 
@@ -253,7 +261,7 @@ def find_sites(path: str, text: str, index: dict[str, list[list[str]]]) -> list[
     return sites
 
 
-def run(root: str, allowed: set[str]) -> Result:
+def run_sealed(root: str, allowed: set[str]) -> Result:
     index = index_sealed(root)
     result = Result()
     for path in sorted(allowed):
@@ -281,9 +289,70 @@ def run(root: str, allowed: set[str]) -> Result:
     return result
 
 
+def _imports(lines: list[str]) -> dict[str, str]:
+    """Map each single-name import line (stripped) to the local name it binds."""
+    result = {}
+    for line in lines:
+        m = IMPORT_RE.match(line.strip())
+        if m:
+            result[line.strip()] = m[2] or m[1].rpartition(".")[2]
+    return result
+
+
+def restore_dropped_imports(before: str, after: str) -> tuple[str, list[str]]:
+    """Re-add imports present in `before` but missing from `after` whose names `after` still uses."""
+    lines = after.splitlines(keepends=True)
+    current = _imports(lines)
+    bound = set(current.values())
+    body = "".join(
+        l for l in mask(after).splitlines(keepends=True)
+        if not l.lstrip().startswith(("import ", "package "))
+    )
+    restored = []
+    for line, name in _imports(before.splitlines()).items():
+        if line in current or name in bound or not re.search(rf"(?<!\w){re.escape(name)}\b", body):
+            continue
+        import_idx = [i for i, l in enumerate(lines) if IMPORT_RE.match(l.strip())]
+        if import_idx:
+            later = [i for i in import_idx if lines[i].strip() > line]
+            at = later[0] if later else import_idx[-1] + 1
+        else:
+            pkg = [i for i, l in enumerate(lines) if l.startswith("package ")]
+            at = pkg[0] + 1 if pkg else 0
+        lines.insert(at, line + "\n")
+        bound.add(name)
+        restored.append(line)
+    return "".join(lines), restored
+
+
+def git_show(rev: str, path: str, root: str) -> str | None:
+    proc = subprocess.run(["git", "-C", root, "show", f"{rev}:{path}"], capture_output=True, text=True)
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def run_imports(root: str, allowed: set[str], before: Callable[[str], str | None]) -> Result:
+    result = Result()
+    for path in sorted(allowed):
+        full = os.path.join(root, path)
+        if not path.endswith(".kt") or not os.path.isfile(full):
+            continue
+        old = before(path)
+        if old is None:
+            continue
+        with open(full, encoding="utf-8") as f:
+            text = f.read()
+        fixed, restored = restore_dropped_imports(old, text)
+        if restored:
+            with open(full, "w", encoding="utf-8") as f:
+                f.write(fixed)
+            result.added.extend(f"{path}: {line}" for line in restored)
+    return result
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--allow", required=True)
+    ap.add_argument("--base", required=True)
     ap.add_argument("--root", default=".")
     ap.add_argument("--report")
     a = ap.parse_args(argv)
@@ -293,9 +362,11 @@ def main(argv: list[str]) -> int:
     except OSError as e:
         print(e, file=sys.stderr)
         return 1
-    result = run(a.root, allowed)
+    result = run_sealed(a.root, allowed)
+    imports = run_imports(a.root, allowed, lambda path: git_show(a.base, path, a.root))
+    result.added.extend(imports.added)
     report = [f"added: {x}" for x in result.added] + [f"unfixable: {x}" for x in result.unfixable]
-    print("\n".join(report) or "no fork `when` map is missing a sealed subtype")
+    print("\n".join(report) or "nothing to fix")
     if a.report:
         with open(a.report, "w", encoding="utf-8") as f:
             f.write("\n".join(report) + ("\n" if report else ""))

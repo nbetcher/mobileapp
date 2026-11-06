@@ -84,9 +84,13 @@ string the pipeline records as `last_synced_version`.
 A clean merge can still break the fork: a new subtype of an upstream sealed class makes the fork's
 exhaustive `when` maps fail to compile. Right after the merge, before anything is pushed or tagged:
 
-1. **Auto-mapper** — `exhaustive_when_fix.py` indexes every sealed type in the tree and adds missing
-   subtypes to the fork's `when` bodies that are nothing but `is Sealed.Sub -> "wire_value"` lines
-   (value = snake_case of the class name). Anything it can't read with certainty is left alone.
+1. **Auto-fixer** — `post_merge_autofix.py`, from the source alone:
+   - indexes every sealed type in the tree and adds missing subtypes to the fork's `when` bodies that
+     are nothing but `is Sealed.Sub -> "wire_value"` lines (value = snake_case of the class name);
+   - restores imports the merge removed (upstream stopped using them) that fork code still uses and
+     no other import now claims (1.14.0.1 dropped `Icons.Default.Extension` this way).
+
+   Anything it can't read with certainty is left alone.
 2. **Compile** — `compile-gate.sh` compiles `:tasker-bridge` (main + unit tests) and `:composeApp`.
 3. **Gemini** — fixes what still fails, told never to add an `else` branch; then compile again.
 

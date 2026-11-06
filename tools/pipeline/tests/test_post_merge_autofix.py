@@ -5,7 +5,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 
-from exhaustive_when_fix import run, sealed_subtypes, snake_case  # noqa: E402
+from post_merge_autofix import restore_dropped_imports, run_imports, run_sealed, sealed_subtypes, snake_case  # noqa: E402
 
 SEALED = """package lib
 
@@ -75,7 +75,7 @@ class RunTest(unittest.TestCase):
             for name, text in files:
                 with open(os.path.join(root, name), "w") as f:
                     f.write(text)
-            result = run(root, {"X.kt"} if allowed else set())
+            result = run_sealed(root, {"X.kt"} if allowed else set())
             with open(os.path.join(root, "X.kt")) as f:
                 return result, f.read()
 
@@ -125,6 +125,60 @@ class RunTest(unittest.TestCase):
         result, out = self.run_fix(source)
         self.assertEqual(source, out)
         self.assertIn("already used", result.unfixable[0])
+
+
+
+BEFORE = """package ui
+
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DoNotDisturb
+import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.Info
+
+val a = Icons.Default.Extension
+"""
+# Upstream dropped its own use and the import; the fork's line (below) still needs it.
+AFTER = BEFORE.replace("import androidx.compose.material.icons.filled.Extension\n", "")
+
+
+class RestoreImportsTest(unittest.TestCase):
+    def test_restores_import_still_used_in_sorted_position(self):
+        fixed, restored = restore_dropped_imports(BEFORE, AFTER)
+        self.assertEqual(BEFORE, fixed)
+        self.assertEqual(["import androidx.compose.material.icons.filled.Extension"], restored)
+
+    def test_ignores_imports_no_longer_used(self):
+        after = AFTER.replace("Icons.Default.Extension", "Icons.Default.Info")
+        self.assertEqual((after, []), restore_dropped_imports(BEFORE, after))
+
+    def test_usage_only_in_comments_or_strings_does_not_count(self):
+        after = AFTER.replace("val a = Icons.Default.Extension", '// Extension\nval a = "Extension"')
+        self.assertEqual((after, []), restore_dropped_imports(BEFORE, after))
+
+    def test_skips_name_now_bound_by_another_import(self):
+        after = AFTER.replace("import androidx.compose.material.icons.Icons\n",
+                              "import androidx.compose.material.icons.Icons\nimport other.Extension\n")
+        self.assertEqual((after, []), restore_dropped_imports(BEFORE, after))
+
+    def test_restores_aliased_import(self):
+        before = "package p\n\nimport a.b.C as D\n\nval x = D()\n"
+        after = "package p\n\nval x = D()\n"
+        fixed, restored = restore_dropped_imports(before, after)
+        self.assertEqual("package p\nimport a.b.C as D\n\nval x = D()\n", fixed)
+        self.assertEqual(["import a.b.C as D"], restored)
+
+    def test_run_imports_respects_allowlist_and_missing_base(self):
+        with tempfile.TemporaryDirectory() as root:
+            for name in ("Fork.kt", "Upstream.kt", "New.kt"):
+                with open(os.path.join(root, name), "w") as f:
+                    f.write(AFTER)
+            bases = {"Fork.kt": BEFORE, "Upstream.kt": BEFORE}
+            result = run_imports(root, {"Fork.kt", "New.kt"}, bases.get)
+            with open(os.path.join(root, "Fork.kt")) as f:
+                self.assertEqual(BEFORE, f.read())
+            with open(os.path.join(root, "Upstream.kt")) as f:
+                self.assertEqual(AFTER, f.read())
+            self.assertEqual(1, len(result.added))
 
 
 if __name__ == "__main__":
