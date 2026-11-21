@@ -66,7 +66,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.lastOrNull
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.io.IOException
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
@@ -262,7 +268,10 @@ interface PebbleWebServices {
     suspend fun fetchUsersMeCore(): CoreUsersMe?
     suspend fun fetchPebbleLocker(): LockerModel?
     suspend fun addToLegacyLocker(uuid: String): Boolean
-    suspend fun fetchAppStoreHome(type: AppType, hardwarePlatform: WatchType?, enabledOnly: Boolean, useCache: Boolean): List<AppStoreHomeResult>
+    /** The homes fetched so far, in source order. Each source is held back until every source before it has answered. */
+    fun appStoreHomes(type: AppType, hardwarePlatform: WatchType?, enabledOnly: Boolean, useCache: Boolean): Flow<List<AppStoreHomeResult>>
+    suspend fun fetchAppStoreHome(type: AppType, hardwarePlatform: WatchType?, enabledOnly: Boolean, useCache: Boolean): List<AppStoreHomeResult> =
+        appStoreHomes(type, hardwarePlatform, enabledOnly, useCache).lastOrNull().orEmpty()
     suspend fun fetchPebbleAppStoreHomes(hardwarePlatform: WatchType?, useCache: Boolean): Map<AppType, AppStoreHomeResult?>
     suspend fun searchAppStore(search: String, appType: AppType, watchType: WatchType, page: Int = 0, pageSize: Int = 20): List<Pair<AppstoreSource, StoreSearchResult>>
     suspend fun addToLegacyLockerWithResponse(uuid: String): LockerAddResponse?
@@ -400,16 +409,28 @@ class RealPebbleWebServices(
 
     override suspend fun fetchUsersMeCore(): CoreUsersMe? = httpClient.get("https://appstore-api.repebble.com/api/v1/users/me", auth = HttpClientAuthType.Core)
 
-    override suspend fun fetchAppStoreHome(type: AppType, hardwarePlatform: WatchType?, enabledOnly: Boolean, useCache: Boolean): List<AppStoreHomeResult> {
-        return coroutineScope {
-            getAllSources(enabledOnly).map {
-                async {
-                    val home = appstoreServiceForSource(it).fetchAppStoreHome(type, hardwarePlatform, useCache)
-                    home?.let { h -> AppStoreHomeResult(it, h) }
+    override fun appStoreHomes(type: AppType, hardwarePlatform: WatchType?, enabledOnly: Boolean, useCache: Boolean): Flow<List<AppStoreHomeResult>> =
+        channelFlow {
+            val sources = getAllSources(enabledOnly)
+            val results = arrayOfNulls<AppStoreHomeResult>(sources.size)
+            val answered = BooleanArray(sources.size)
+            var shown = 0
+            val lock = Mutex()
+            sources.forEachIndexed { i, source ->
+                launch {
+                    val home = appstoreServiceForSource(source).fetchAppStoreHome(type, hardwarePlatform, useCache)
+                    lock.withLock {
+                        results[i] = home?.let { AppStoreHomeResult(source, it) }
+                        answered[i] = true
+                        val ready = answered.indexOfFirst { !it }.takeIf { it >= 0 } ?: sources.size
+                        if (ready > shown) {
+                            shown = ready
+                            send(results.take(ready).filterNotNull())
+                        }
+                    }
                 }
-            }.awaitAll().filterNotNull()
+            }
         }
-    }
 
     override suspend fun fetchPebbleAppStoreHomes(
         hardwarePlatform: WatchType?,
@@ -796,11 +817,14 @@ data class StoreApplication(
     val capabilities: List<String>? = null,
     @SerialName("uses_permissions")
     val usesPermissions: List<PluginPermission> = emptyList(),
+    /** Null from a store that sends no appinfo fields. */
     @SerialName("manifest_version")
-    val manifestVersion: Int = 1,
+    val manifestVersion: Int? = null,
     @SerialName("pebblekit2_packages")
     val pebbleKit2Packages: List<String> = emptyList(),
     val plugin: StorePlugin? = null,
+    @SerialName("config_page")
+    val configPage: String? = null,
     val category: String,
     @SerialName("category_color")
     val categoryColor: String,
@@ -990,7 +1014,7 @@ fun StoreApplication.asLockerEntryPlatform(
 
 fun StoreApplication.pluginMetadata(): PluginMetadata? {
     val raw = plugin?.manifest ?: return null
-    if (isLegacy(manifestVersion) || uuid == null) return null
+    if (isLegacy(manifestVersion ?: 1) || uuid == null) return null
     val manifest = runCatching { DiskUtil.pbwJson.decodeFromJsonElement(PluginManifest.serializer(), raw) }
         .onFailure { logger.w(it) { "unreadable plugin manifest for $uuid" } }
         .getOrNull() ?: return null
@@ -1009,6 +1033,7 @@ fun StoreApplication.toLockerEntry(sourceUrl: String, timelineToken: String?): L
         logger.w { "no uuid" }
         return null
     }
+    val configPage = app.configPage ?: app.plugin?.configPage
     return LockerEntry(
         id = app.id,
         uuid = app.uuid,
@@ -1017,7 +1042,7 @@ fun StoreApplication.toLockerEntry(sourceUrl: String, timelineToken: String?): L
         title = app.title,
         type = app.type,
         developer = LockerEntryDeveloper(id = app.developerId, name = app.author, contactEmail = ""),
-        isConfigurable = app.capabilities.orEmpty().contains("configurable") || app.plugin?.configPage != null,
+        isConfigurable = app.capabilities.orEmpty().contains("configurable") || configPage != null,
         isTimelineEnabled = app.capabilities.orEmpty().contains("timeline"),
         pbw = LockerEntryPBW(
             file = app.latestRelease.pbwFile.let {
@@ -1041,7 +1066,7 @@ fun StoreApplication.toLockerEntry(sourceUrl: String, timelineToken: String?): L
         userToken = timelineToken,
         manifestVersion = app.manifestVersion,
         pluginManifest = app.plugin?.manifest,
-        configPage = app.plugin?.configPage,
+        configPage = configPage,
         iconTintable = app.iconTintable,
         hardwarePlatforms = buildList {
             var fallbackFlags = 0

@@ -38,12 +38,18 @@ object PermissionRegistry {
         PermissionDefinition(PluginPermissions.CALENDAR, PermissionKind.Read),
         PermissionDefinition(PluginPermissions.CONTACTS, PermissionKind.Read),
         PermissionDefinition(PluginPermissions.TIMELINE, PermissionKind.Write),
+        PermissionDefinition(PluginPermissions.SHOW_NOTIFICATIONS, PermissionKind.Write),
         PermissionDefinition(PluginPermissions.READ_WATCH_SETTINGS, PermissionKind.Read),
         PermissionDefinition(PluginPermissions.WRITE_WATCH_SETTINGS, PermissionKind.Write),
         PermissionDefinition(PluginPermissions.READ_MUSIC, PermissionKind.Read),
         PermissionDefinition(PluginPermissions.CONTROL_MUSIC, PermissionKind.Write),
+        PermissionDefinition(PluginPermissions.READ_APPS, PermissionKind.Read),
         PermissionDefinition(PluginPermissions.LAUNCH_APPS, PermissionKind.Write),
         PermissionDefinition(PluginPermissions.FIND_MY_PHONE, PermissionKind.Write),
+        PermissionDefinition(PluginPermissions.SET_INDEX_ALARMS, PermissionKind.Write),
+        PermissionDefinition(PluginPermissions.SEND_MESSAGES_BEEPER, PermissionKind.Exfiltrating),
+        PermissionDefinition(PluginPermissions.WRITE_INDEX_NOTES, PermissionKind.Write),
+        PermissionDefinition(PluginPermissions.WRITE_INDEX_REMINDERS, PermissionKind.Write),
         PermissionDefinition(PluginPermissions.READ_FILES, PermissionKind.Read),
         PermissionDefinition(PluginPermissions.WRITE_FILES, PermissionKind.Write),
         PermissionDefinition(PluginPermissions.LEGACY_PEBBLEKIT, PermissionKind.Exfiltrating),
@@ -61,6 +67,7 @@ private val LEGACY_PKJS = listOf(
     PluginPermissions.GLOBAL_INTERNET,
     PluginPermissions.LOCATION,
     PluginPermissions.TIMELINE,
+    PluginPermissions.SHOW_NOTIFICATIONS,
 )
 
 /** What a legacy app keeps without asking, unless `askLegacyAppsForPermissions` is on. */
@@ -108,6 +115,16 @@ fun PluginPermission.keys(): List<String> {
     if (domains.isNullOrEmpty()) return listOf(name)
     return domains.map { it.lowercase().removePrefix(".").trimEnd('.') }.filter(::isHostname).map(::internetKey)
 }
+
+/** The developer said which permissions the app needs; otherwise none are treated as required. */
+fun List<PluginPermission>.describesRequired(): Boolean = any { it.required != null }
+
+/** Only once the developer has said which are required (see [describesRequired]). */
+fun List<PluginPermission>.isRequired(key: String): Boolean = describesRequired() && declarationOf(key)?.required == true
+
+/** The declaration [key] was granted under: its own entry, else a bare permission's (a file scope's `ReadFiles`). */
+fun List<PluginPermission>.declarationOf(key: String): PluginPermission? =
+    firstOrNull { key in it.keys() } ?: firstOrNull { it.plugin == null && it.name == permissionOf(key) }
 
 private val HOSTNAME = Regex("[a-z0-9-]+(\\.[a-z0-9-]+)*")
 
