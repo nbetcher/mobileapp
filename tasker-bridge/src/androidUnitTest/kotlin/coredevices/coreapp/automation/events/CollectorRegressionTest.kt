@@ -17,6 +17,7 @@ import io.rebble.libpebblecommon.database.dao.HealthAggregates
 import kotlin.uuid.Uuid
 import io.rebble.libpebblecommon.packets.AppMessageTuple
 import io.rebble.libpebblecommon.connection.bt.BluetoothState
+import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdateTrigger
 import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdater.FirmwareUpdateStatus
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.test.*
@@ -82,7 +83,7 @@ class CollectorRegressionTest {
     @Test fun initialProgressUpdatesAndTerminalStatesArePerWatch() = runTest {
         val lp = mockk<LibPebble>()
         val progress = MutableStateFlow(0.25f)
-        val fw = FirmwareUpdateStatus.InProgress(mockk(), progress)
+        val fw = FirmwareUpdateStatus.InProgress(mockk(), progress, FirmwareUpdateTrigger.Ui)
         val dev = MutableStateFlow(true)
         val device = watch(fw = fw, dev = dev)
         val devices = MutableStateFlow<List<PebbleDevice>>(listOf(device))
@@ -115,7 +116,7 @@ class CollectorRegressionTest {
         val d = EventDispatcher("test")
         PerWatchCollector(lp, d).start(backgroundScope)
         runCurrent()
-        val replacement = watch(fw = FirmwareUpdateStatus.InProgress(mockk(), MutableStateFlow(0.3f)), dev = dev)
+        val replacement = watch(fw = FirmwareUpdateStatus.InProgress(mockk(), MutableStateFlow(0.3f), FirmwareUpdateTrigger.Ui), dev = dev)
         every { replacement.batteryLevel } returns 50
         devices.value = listOf(replacement)
         runCurrent()
@@ -155,7 +156,7 @@ class CollectorRegressionTest {
         val progress = MutableStateFlow(0.2f)
         val dev = MutableStateFlow(false)
         val devices = MutableStateFlow<List<PebbleDevice>>(listOf(watch(
-            fw = FirmwareUpdateStatus.InProgress(mockk(), progress), dev = dev)))
+            fw = FirmwareUpdateStatus.InProgress(mockk(), progress, FirmwareUpdateTrigger.Ui), dev = dev)))
         every { lp.watches } returns devices
         val d = EventDispatcher("test")
         PerWatchCollector(lp, d).start(backgroundScope)
@@ -170,7 +171,7 @@ class CollectorRegressionTest {
     @Test fun replacementConnectionRestartsFirmwareObserverEvenForEqualStatus() = runTest {
         val lp = mockk<LibPebble>()
         val progress = MutableStateFlow(0.2f)
-        val fw = FirmwareUpdateStatus.InProgress(mockk(), progress)
+        val fw = FirmwareUpdateStatus.InProgress(mockk(), progress, FirmwareUpdateTrigger.Ui)
         val devices = MutableStateFlow<List<PebbleDevice>>(listOf(watch("OLD", fw = fw)))
         every { lp.watches } returns devices
         val d = EventDispatcher("test")
@@ -386,9 +387,9 @@ class CollectorRegressionTest {
         val update = mockk<FirmwareUpdateCheckResult.FoundUpdate>()
         assertEquals("idle", FirmwareUpdateStatus.NotInProgress.Idle().wireStatus())
         assertEquals("failed", FirmwareUpdateStatus.NotInProgress.Idle(Exception()).wireStatus())
-        assertEquals("waiting", FirmwareUpdateStatus.WaitingToStart(update).wireStatus())
-        assertEquals("rebooting", FirmwareUpdateStatus.WaitingForReboot(update).wireStatus())
-        assertEquals(100, FirmwareUpdateStatus.InProgress(update, MutableStateFlow(1.2f)).wireProgress())
+        assertEquals("waiting", FirmwareUpdateStatus.WaitingToStart(update, FirmwareUpdateTrigger.Ui).wireStatus())
+        assertEquals("rebooting", FirmwareUpdateStatus.WaitingForReboot(update, FirmwareUpdateTrigger.Ui).wireStatus())
+        assertEquals(100, FirmwareUpdateStatus.InProgress(update, MutableStateFlow(1.2f), FirmwareUpdateTrigger.Ui).wireProgress())
     }
     @Test fun metadataDelayDoesNotCancelObservedAppTransitions() = runTest {
         val lp=mockk<LibPebble>()

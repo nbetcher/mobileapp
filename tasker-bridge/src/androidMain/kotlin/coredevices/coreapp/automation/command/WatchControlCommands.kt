@@ -10,6 +10,7 @@ import io.rebble.libpebblecommon.connection.CommonConnectedDevice
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.connection.FirmwareUpdateCheckResult
 import io.rebble.libpebblecommon.connection.LibPebble
+import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdateTrigger
 import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdater.FirmwareUpdateStatus
 import io.rebble.libpebblecommon.database.entity.WatchPref
 import kotlinx.coroutines.flow.first
@@ -187,7 +188,7 @@ class WatchControlCommands(
         if (expected != null && expected != update.version.stringVersion) {
             return invalid("the available update is ${update.version.stringVersion}, not $expected")
         }
-        device.updateFirmware(update)
+        device.updateFirmware(update, FirmwareUpdateTrigger.Ui)
         return CommandResult.Ok(mapOf("serial" to device.serial, "version" to update.version.stringVersion, "started" to "true"))
     }
 

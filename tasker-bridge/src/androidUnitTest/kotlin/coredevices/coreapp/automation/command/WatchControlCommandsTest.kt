@@ -5,6 +5,7 @@ import coredevices.coreapp.automation.CommandEnvelope
 import coredevices.coreapp.automation.ErrorCode
 import io.mockk.*
 import io.rebble.libpebblecommon.connection.*
+import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdateTrigger
 import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdater.FirmwareUpdateStatus
 import io.rebble.libpebblecommon.database.dao.WatchPreference
 import io.rebble.libpebblecommon.database.entity.BoolWatchPref
@@ -64,6 +65,7 @@ class WatchControlCommandsTest {
         version = mockk<FirmwareVersion> { every { stringVersion } returns version },
         url = "https://example.invalid/fw.pbz",
         notes = "notes",
+        installsDirectly = true,
     )
 
     @Test fun rebootCoolsDownForSixtySecondsPerWatch() = runTest {
@@ -185,20 +187,20 @@ class WatchControlCommandsTest {
         assertEquals(ErrorCode.FIRMWARE_CHECK_STALE, failure(commands.run(CommandCatalog.WATCH_INSTALL_FIRMWARE)))
         every { control.firmwareCheckedAt(none) } returns instant - 1.hours
         assertEquals(ErrorCode.FIRMWARE_UPDATE_UNAVAILABLE, failure(commands.run(CommandCatalog.WATCH_INSTALL_FIRMWARE)))
-        verify(exactly = 0) { none.updateFirmware(any()) }
+        verify(exactly = 0) { none.updateFirmware(any(), any()) }
     }
 
     @Test fun installFirmwareStartsOnlyTheExpectedIdleUpdate() = runTest {
         val found = update("v4.38.2")
-        val busy = watch("B", found, FirmwareUpdateStatus.WaitingToStart(found))
+        val busy = watch("B", found, FirmwareUpdateStatus.WaitingToStart(found, FirmwareUpdateTrigger.Ui))
         assertEquals(ErrorCode.WATCH_BUSY, failure(commands(busy).run(CommandCatalog.WATCH_INSTALL_FIRMWARE)))
 
         val a = watch("A", found)
         val commands = commands(a)
         assertEquals(ErrorCode.INVALID_ARGS, failure(commands.run(CommandCatalog.WATCH_INSTALL_FIRMWARE, "version" to "v4.38.1")))
-        verify(exactly = 0) { a.updateFirmware(any()) }
+        verify(exactly = 0) { a.updateFirmware(any(), any()) }
         assertEquals("v4.38.2", ok(commands.run(CommandCatalog.WATCH_INSTALL_FIRMWARE, "version" to "v4.38.2"))["version"])
-        verify(exactly = 1) { a.updateFirmware(found) }
+        verify(exactly = 1) { a.updateFirmware(found, FirmwareUpdateTrigger.Ui) }
     }
 
     @Test fun prefsListWithLabelsValuesAndSupport() = runTest {
