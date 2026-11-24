@@ -119,9 +119,13 @@ import org.koin.core.component.KoinComponent
 import org.koin.core.component.get
 import org.koin.core.parameter.parametersOf
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.flow.flowOf
 import kotlin.uuid.Uuid
 
 private val logger = Logger.withTag("LockerAppScreen")
+
+/** App store developer id of Pebble's own apps (eric@repebble.com). */
+private const val PEBBLE_DEVELOPER_ID = "52d8a44faef8d590d3000029"
 
 class LockerAppViewModel(
 //    private val pebbleWebServices: RealPebbleWebServices,
@@ -224,6 +228,8 @@ fun LockerAppScreen(topBarParams: TopBarParams, uuid: Uuid?, navBarNav: NavBarNa
         val nativeLockerAddUtil: NativeLockerAddUtil = koinInject()
         var adding by remember { mutableStateOf(false) }
         var storeReview by remember { mutableStateOf<InstallReview?>(null) }
+        var storeReplacing by remember { mutableStateOf<ReplacedApp?>(null) }
+        val appReplacements: AppReplacements = koinInject()
 
         fun reloadFromStore(useCache: Boolean) {
             if (storeId != null && storeSource != null) {
@@ -315,6 +321,14 @@ fun LockerAppScreen(topBarParams: TopBarParams, uuid: Uuid?, navBarNav: NavBarNa
                                     text = entry.title,
                                     fontSize = 22.sp,
                                     modifier = Modifier.padding(vertical = 5.dp),
+                                )
+                            }
+                            Row {
+                                Text(
+                                    text = entry.developerName,
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    lineHeight = 11.sp,
                                 )
                             }
                             val hearts = if (viewModel.hearts != null) {
@@ -518,23 +532,47 @@ fun LockerAppScreen(topBarParams: TopBarParams, uuid: Uuid?, navBarNav: NavBarNa
                                     }
                                 }
                             }
+                            suspend fun reviewAndAdd() {
+                                val review = nativeLockerAddUtil.review(storeApp)
+                                if (review == null) addToWatch(emptyMap()) else storeReview = review
+                            }
                             storeReview?.let { review ->
                                 InstallReviewDialog(review) { granted ->
                                     storeReview = null
                                     if (granted != null) addToWatch(granted) else adding = false
                                 }
                             }
+                            storeReplacing?.let { replaced ->
+                                ReplaceAppDialog(replaced) { replace ->
+                                    storeReplacing = null
+                                    if (replace) {
+                                        appReplacements.replace(
+                                            replaced,
+                                            newSource = storeApp.storeSource,
+                                            snackbars = topBarParams,
+                                            onStillInstalled = { storeReplacing = it },
+                                            onFailed = { adding = false },
+                                        ) { reviewAndAdd() }
+                                    } else {
+                                        adding = false
+                                    }
+                                }
+                            }
+                            val storeUuid = remember(storeApp) { storeApp.storeApp?.uuid?.let(Uuid::parse) }
+                            val canCheckReplacement by remember(storeUuid) {
+                                storeUuid?.let(appReplacements::canCheck) ?: flowOf(true)
+                            }.collectAsState(false)
                             val addText = if (entry.type == AppType.Plugin) "Add" else "Add To Watch"
                             PebbleElevatedButton(
                                 text = addText,
                                 onClick = {
                                     adding = true
                                     scope.launch {
-                                        val review = nativeLockerAddUtil.review(storeApp)
-                                        if (review == null) addToWatch(emptyMap()) else storeReview = review
+                                        val replaced = storeUuid?.let { appReplacements.check(it, storeApp.storeSource) }
+                                        if (replaced == null) reviewAndAdd() else storeReplacing = replaced
                                     }
                                 },
-                                enabled = !adding,
+                                enabled = !adding && canCheckReplacement,
                                 icon = Icons.Default.Add,
                                 contentDescription = addText,
                                 primaryColor = true,
@@ -813,7 +851,21 @@ fun LockerAppScreen(topBarParams: TopBarParams, uuid: Uuid?, navBarNav: NavBarNa
                         }
                     }
                     val contactStoreId = entry.storeId
-                    if (
+                    if (entry.developerId == PEBBLE_DEVELOPER_ID) {
+                        // Pebble's own apps: file a bug report instead of messaging the developer.
+                        // Plugins run on the phone, so they're an Index report unless a watch is connected.
+                        PropertyRow(
+                            name = "GET HELP",
+                            nameModifier = propertyNameModifier,
+                            value = "Report a Bug",
+                            onClick = {
+                                navBarNav.navigateTo(
+                                    CommonRoutes.BugReport(pebble = entry.type != AppType.Plugin || connected)
+                                )
+                            },
+                            onClickIcon = Icons.AutoMirrored.Default.ArrowForward,
+                        )
+                    } else if (
                         commonAppStore?.contactable == true &&
                         commonAppStore.storeSource.isPebbleFeed() &&
                         contactStoreId != null

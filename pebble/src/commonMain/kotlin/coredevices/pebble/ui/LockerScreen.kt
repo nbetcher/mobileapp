@@ -90,6 +90,7 @@ import coredevices.database.AppstoreCollectionDao
 import coredevices.database.AppstoreSource
 import coredevices.database.AppstoreSourceDao
 import coredevices.database.PLUGIN_DATA_APPS_SLUG
+import coredevices.database.TOP_CHARTS_COLLECTION_SLUG
 import coredevices.libindex.LibIndex
 import coredevices.libindex.device.KnownIndexDevice
 import coredevices.pebble.PebbleDeepLinkHandler
@@ -106,6 +107,7 @@ import io.rebble.libpebblecommon.connection.AppContext
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.connection.KnownPebbleDevice
 import io.rebble.libpebblecommon.connection.LibPebble
+import io.rebble.libpebblecommon.disk.pbw.PbwApp
 import io.rebble.libpebblecommon.permissions.InstallReview
 import io.rebble.libpebblecommon.plugin.PluginMetadata
 import io.rebble.libpebblecommon.locker.AppType
@@ -120,6 +122,7 @@ import kotlinx.coroutines.IO
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -197,11 +200,18 @@ class LockerViewModel(
             val finished = CompletableDeferred<Unit>()
             viewModelScope.launch {
                 try {
-                    val result = withContext(Dispatchers.IO) {
-                        pebbleWebServices.fetchAppStoreHome(it, platform, enabledOnly = true, useCache = useCache)
-                    }
-                    if (!result.isEmpty()) {
-                        storeHomeAllFeeds[it] = result
+                    var latest = emptyList<AppStoreHomeResult>()
+                    pebbleWebServices.appStoreHomes(it, platform, enabledOnly = true, useCache = useCache)
+                        .flowOn(Dispatchers.IO)
+                        .collect { result ->
+                            latest = result
+                            // Keep showing what a refresh hasn't reached yet.
+                            val answered = result.map { home -> home.source.id }.toSet()
+                            storeHomeAllFeeds[it] = result +
+                                storeHomeAllFeeds[it].orEmpty().filter { home -> home.source.id !in answered }
+                        }
+                    if (latest.isNotEmpty()) {
+                        storeHomeAllFeeds[it] = latest
                     }
                 } finally {
                     finished.complete(Unit)
@@ -229,12 +239,17 @@ class LockerViewModel(
         }
     }
 
+    private var refreshingStores: List<Int>? = null
+
     fun maybeRefreshStore(watchType: WatchType) {
         viewModelScope.launch {
             val currentEnabledStores = storeSourceDao.getAllEnabledSources().map { it.id }
+            // Part-way through a refresh, only some stores have loaded.
+            if (storeIsRefreshing && refreshingStores == currentEnabledStores) return@launch
             val loadedStores = storeHomeAllFeeds.values.firstOrNull()?.map { it.source.id }
             if (loadedStores == null || loadedStores != currentEnabledStores) {
                 logger.v { "refreshing store" }
+                refreshingStores = currentEnabledStores
                 refreshStore(watchType, useCache = true)
             }
         }
@@ -271,16 +286,42 @@ fun LockerScreen(
         // Outlives this screen: installing waits for the watch to sync.
         fun install(path: Path, granted: Map<String, Boolean?>) =
             GlobalScope.launch { libPebble.sideloadApp(path, granted = granted) }
+        val appReplacements: AppReplacements = koinInject()
+        var sideloadReplacing by remember { mutableStateOf<Pair<Path, ReplacedApp>?>(null) }
+        suspend fun reviewAndInstall(path: Path) {
+            val review = libPebble.reviewSideload(path)
+            if (review == null) install(path, emptyMap()) else sideloadReview = PendingSideload(path, review)
+        }
         fun sideload(path: Path) {
             scope.launch {
-                val review = libPebble.reviewSideload(path)
-                if (review == null) install(path, emptyMap()) else sideloadReview = PendingSideload(path, review)
+                val uuid = withContext(Dispatchers.IO) {
+                    try {
+                        Uuid.parse(PbwApp(path).info.uuid)
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+                val replaced = uuid?.let { appReplacements.check(it, newSource = null) }
+                if (replaced == null) reviewAndInstall(path) else sideloadReplacing = path to replaced
             }
         }
         sideloadReview?.let { pending ->
             InstallReviewDialog(pending.review) { granted ->
                 sideloadReview = null
                 if (granted != null) install(pending.path, granted)
+            }
+        }
+        sideloadReplacing?.let { (path, replaced) ->
+            ReplaceAppDialog(replaced) { replace ->
+                sideloadReplacing = null
+                if (replace) {
+                    appReplacements.replace(
+                        replaced,
+                        newSource = null,
+                        snackbars = topBarParams,
+                        onStillInstalled = { sideloadReplacing = path to it },
+                    ) { reviewAndInstall(path) }
+                }
             }
         }
         val deepLinks: PebbleDeepLinkHandler = koinInject()
@@ -312,7 +353,7 @@ fun LockerScreen(
         }
         val launchInstallAppDialog = rememberOpenDocumentLauncher {
             it?.firstOrNull()?.let { file ->
-                val tempAppPath = getTempFilePath(appContext, "temp.pbw")
+                val tempAppPath = getTempFilePath(appContext, "sideload-${Uuid.random()}.pbw")
                 SystemFileSystem.sink(tempAppPath).use { sink ->
                     file.source.use { source ->
                         source.transferTo(sink)
@@ -337,16 +378,19 @@ fun LockerScreen(
         val storeHome = remember(storeHomeForType, collections, viewModel.type.value, pluginsEnabled) {
             val collectionRules = collections!!.groupBy { it.sourceId }
             storeHomeForType?.map { (source, home) ->
+                val sourceRules = collectionRules[source.id].orEmpty().filter { it.type == viewModel.type.value }
                 val homeFiltered = home.let {
                     it.copy(collections = it.collections.filter { col ->
                         (pluginsEnabled || col.slug != PLUGIN_DATA_APPS_SLUG) &&
-                            collectionRules[source.id]?.firstOrNull { it.slug == col.slug && it.type == viewModel.type.value }?.enabled ?: false
+                            sourceRules.firstOrNull { it.slug == col.slug }?.enabled ?: false
                     })
                 }
                 val categories = homeFiltered.categories.filter{
                     it.slug != "index"
                 }.chunked(2)
-                StoreHomeDisplay(source, homeFiltered, categories)
+                val showTopCharts = source.isPebbleFeed() &&
+                    sourceRules.firstOrNull { it.slug == TOP_CHARTS_COLLECTION_SLUG }?.enabled ?: true
+                StoreHomeDisplay(source, homeFiltered, categories, showTopCharts)
             } ?: emptyList()
         }
         val settings: Settings = koinInject()
@@ -671,7 +715,7 @@ fun LockerScreen(
                                         }
                                     }
                                 }
-                                if (source.isPebbleFeed()) {
+                                if (it.showTopCharts) {
                                     item(contentType = "top_charts", key = "top_charts_${source.id}") {
                                         TopChartsSection(
                                             source = source,
@@ -772,6 +816,7 @@ data class StoreHomeDisplay(
     val source: AppstoreSource,
     val home: AppStoreHome,
     val categories: List<List<StoreCategory>>,
+    val showTopCharts: Boolean,
 )
 
 @Composable
@@ -1283,6 +1328,14 @@ fun NativeWatchfaceListItem(
                     fontWeight = FontWeight.Bold,
                     fontSize = 16.sp,
                     maxLines = 1,
+                )
+            }
+            Row {
+                Text(
+                    text = entry.developerName,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    lineHeight = 11.sp,
                 )
             }
             Row {

@@ -4,6 +4,8 @@ import androidx.paging.PagingSource
 import androidx.paging.PagingState
 import co.touchlab.kermit.Logger
 import com.algolia.client.api.SearchClient
+import com.algolia.client.configuration.ClientOptions
+import com.algolia.client.configuration.Host
 import com.algolia.client.exception.AlgoliaApiException
 import com.algolia.client.model.search.SearchParamsObject
 import com.algolia.client.model.search.TagFilters
@@ -12,6 +14,7 @@ import coredevices.database.AppstoreCollectionDao
 import coredevices.database.AppstoreSource
 import coredevices.database.HEARTED_COLLECTION_SLUG
 import coredevices.database.PLUGIN_DATA_APPS_SLUG
+import coredevices.database.TOP_CHARTS_COLLECTION_SLUG
 import coredevices.database.HeartEntity
 import coredevices.database.HeartsDao
 import coredevices.pebble.Platform
@@ -79,7 +82,8 @@ class AppstoreService(
     }
     private val searchClient = source.algoliaAppId?.let { appId ->
         source.algoliaApiKey?.let { apiKey ->
-            SearchClient(appId, apiKey)
+            val hosts = if (source.isPebbleFeed()) listOf(Host(APPSEARCH_HOST)) else null
+            SearchClient(appId, apiKey, ClientOptions(hosts = hosts))
         }
     }
     private val json = Json {
@@ -406,6 +410,18 @@ class AppstoreService(
                         synthetic = true,
                     )
                 )
+                if (source.isPebbleFeed()) {
+                    appstoreCollectionDao.insertCollectionIfMissing(
+                        AppstoreCollection(
+                            sourceId = source.id,
+                            title = "Top Charts",
+                            slug = TOP_CHARTS_COLLECTION_SLUG,
+                            type = type,
+                            enabled = true,
+                            synthetic = true,
+                        )
+                    )
+                }
                 cache.writeHome(fetched, type, source, parameters)
             }
             fetched
