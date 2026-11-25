@@ -10,26 +10,27 @@
     "1.17.0.1": 4,
     "1.18.0.2": 8,
     "1.8.0.6": 7,
-    "1.9.1.3": 1
+    "1.9.1.3": 1,
+    "2.0.0": 1
   },
   "build_strikes": [],
   "cutoff": {
-    "branch_head_position": 2679,
-    "changelog_version": "1.18.0.2",
-    "cutoff_position": 2563,
-    "cutoff_sha": "13febacff4a8634b2ef865ece6dd98fb4d776c12",
+    "branch_head_position": 2696,
+    "changelog_version": "2.0.0",
+    "cutoff_position": 2650,
+    "cutoff_sha": "9eeddf05cee0199c69da31123f9e1f1caa2bd724",
     "heuristic_method": "item-match",
-    "heuristic_position": 2563,
-    "heuristic_sha": "13febacff4a8634b2ef865ece6dd98fb4d776c12",
-    "items_matched": 13,
-    "items_total": 13,
+    "heuristic_position": 2659,
+    "heuristic_sha": "7d77a89fa5aaa930dc479e03ce2a7381a2f649bc",
+    "items_matched": 69,
+    "items_total": 72,
     "method": "release-tag",
-    "release_date": "2026-11-09",
-    "release_tag": "1.18.0.2",
+    "release_date": "2026-11-18",
+    "release_tag": "2.0.0",
     "store_source": "itunes",
-    "store_version": "1.18.0.2",
-    "tag_check": "match",
-    "unreleased_commits_beyond_cutoff": 116
+    "store_version": "2.0.0",
+    "tag_check": "behind",
+    "unreleased_commits_beyond_cutoff": 46
   },
   "last_built_tag": "v1.18.0.2-tasker.1",
   "last_built_version": "1.18.0.2",
@@ -38,9 +39,9 @@
     "run_url": "https://github.com/nbetcher/mobileapp/actions/runs/45327554222",
     "version": "1.18.0.2"
   },
-  "last_synced_cutoff": "d75614f896f3e2a58c42b0c0eadf5f93777b1e9c",
+  "last_synced_cutoff": "9eeddf05cee0199c69da31123f9e1f1caa2bd724",
   "last_synced_tasker": "b2fc80852688ecf7e99f591cce4957ba4adf53a9",
-  "last_synced_version": "1.18.0.2",
+  "last_synced_version": "2.0.0",
   "plugin_readiness": {
     "g11_issue_255": "OPEN/0",
     "g11_issue_293": "OPEN/0",
@@ -71,7 +72,12 @@
     "p5_watchstate_no_src": "false",
     "p9_request_timeout": "REQUEST_TIMEOUT=20.seconds"
   },
-  "run_url": "https://github.com/nbetcher/mobileapp/actions/runs/45327554222",
-  "status": "merge-failed",
-  "updated_at": "2026-11-24T04:49:02Z"
+  "previous": {
+    "last_synced_cutoff": "d75614f896f3e2a58c42b0c0eadf5f93777b1e9c",
+    "last_synced_tasker": "b2fc80852688ecf7e99f591cce4957ba4adf53a9",
+    "last_synced_version": "1.18.0.2"
+  },
+  "run_url": "https://github.com/nbetcher/mobileapp/actions/runs/45547903558",
+  "status": "merging",
+  "updated_at": "2026-11-25T04:36:30Z"
 }
