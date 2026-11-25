@@ -35,13 +35,13 @@
   "last_built_tag": "v1.18.0.2-tasker.1",
   "last_built_version": "1.18.0.2",
   "last_merge_failure": {
-    "at": "2026-11-24T04:49:02Z",
-    "run_url": "https://github.com/nbetcher/mobileapp/actions/runs/45327554222",
-    "version": "1.18.0.2"
+    "at": "2026-11-25T04:48:38Z",
+    "run_url": "https://github.com/nbetcher/mobileapp/actions/runs/45547903558",
+    "version": "2.0.0"
   },
-  "last_synced_cutoff": "9eeddf05cee0199c69da31123f9e1f1caa2bd724",
+  "last_synced_cutoff": "d75614f896f3e2a58c42b0c0eadf5f93777b1e9c",
   "last_synced_tasker": "b2fc80852688ecf7e99f591cce4957ba4adf53a9",
-  "last_synced_version": "2.0.0",
+  "last_synced_version": "1.18.0.2",
   "plugin_readiness": {
     "g11_issue_255": "OPEN/0",
     "g11_issue_293": "OPEN/0",
@@ -72,12 +72,7 @@
     "p5_watchstate_no_src": "false",
     "p9_request_timeout": "REQUEST_TIMEOUT=20.seconds"
   },
-  "previous": {
-    "last_synced_cutoff": "d75614f896f3e2a58c42b0c0eadf5f93777b1e9c",
-    "last_synced_tasker": "b2fc80852688ecf7e99f591cce4957ba4adf53a9",
-    "last_synced_version": "1.18.0.2"
-  },
   "run_url": "https://github.com/nbetcher/mobileapp/actions/runs/45547903558",
-  "status": "merging",
-  "updated_at": "2026-11-25T04:36:30Z"
+  "status": "merge-failed",
+  "updated_at": "2026-11-25T04:48:38Z"
 }
