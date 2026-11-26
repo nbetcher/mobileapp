@@ -44,7 +44,7 @@
   "last_synced_version": "1.18.0.2",
   "plugin_readiness": {
     "g11_issue_255": "OPEN/0",
-    "g11_issue_293": "OPEN/0",
+    "g11_issue_293": "CLOSED/0",
     "g11_pr_171": "CLOSED",
     "g11_pr_172": "CLOSED",
     "g11_pr_395": "OPEN",
