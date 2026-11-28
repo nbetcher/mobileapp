@@ -27,7 +27,7 @@ class FirmwareOfferCollector(
                             val emitted = dispatcher.emit("system", "fw.available", device.toWatchRef(), mapOf(
                                 "version" to version,
                                 "current" to device.runningFwVersion,
-                                "can_downgrade" to result.canDowngrade.toString(),
+                                "installs_directly" to result.installsDirectly.toString(),
                                 "notes" to result.notes.take(MAX_NOTES),
                             ))
                             if (emitted) announced[id] = version

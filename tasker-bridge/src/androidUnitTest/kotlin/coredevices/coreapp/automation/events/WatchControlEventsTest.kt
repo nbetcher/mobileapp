@@ -35,7 +35,7 @@ class WatchControlEventsTest {
 
     @Test fun firmwareOfferIsAnnouncedOncePerVersion() = runTest {
         fun found(version: String) = FirmwareUpdateCheckResult.FoundUpdate(
-            mockk<FirmwareVersion> { every { stringVersion } returns version }, "https://example.invalid", "notes")
+            mockk<FirmwareVersion> { every { stringVersion } returns version }, "https://example.invalid", "notes", installsDirectly = true)
         fun watch(result: FirmwareUpdateCheckResult?): CommonConnectedDevice = mockk(relaxed = true) {
             every { identifier.asString } returns "AA:BB"
             every { serial } returns "SERIAL"
