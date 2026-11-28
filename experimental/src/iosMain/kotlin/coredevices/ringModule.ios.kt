@@ -5,6 +5,7 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import coredevices.haversine.KMPHaversineSatelliteManager
 import coredevices.ring.RingDelegate
+import coredevices.ring.agent.ShortcutActionHandler
 import coredevices.ring.agent.integrations.obsidian.IosObsidianVault
 import coredevices.ring.agent.integrations.obsidian.ObsidianVault
 import coredevices.ring.clock.IosLocalClockNotifier
@@ -31,6 +32,7 @@ import org.koin.core.module.dsl.singleOf
 import org.koin.core.module.dsl.viewModel
 import org.koin.dsl.bind
 import org.koin.dsl.module
+import coredevices.ring.reminders.ReminderScheduler
 import platform.Foundation.NSDocumentDirectory
 import platform.Foundation.NSFileManager
 import platform.Foundation.NSUserDomainMask
@@ -38,6 +40,7 @@ import platform.Foundation.NSUserDomainMask
 actual val platformRingModule = module {
     single<CactusModelPathProvider> { CactusModelProvider() }
     singleOf(::RingDelegate)
+    singleOf(::ReminderScheduler)
     factoryOf(::AudioRecorder)
     factoryOf(::AudioPlayer)
     factory {
@@ -68,7 +71,7 @@ actual val platformRingModule = module {
     single {
         RingOta(get(), get(), get())
     }
-    singleOf(::PlatformIndexNotificationManager)
+    single { PlatformIndexNotificationManager(get(), get(), lazy { get<ShortcutActionHandler>() }) }
     singleOf(::BackgroundRingService)
     singleOf(::IntegrationTokenStorageImpl) bind IntegrationTokenStorage::class
     single { EncryptionKeyManager() }

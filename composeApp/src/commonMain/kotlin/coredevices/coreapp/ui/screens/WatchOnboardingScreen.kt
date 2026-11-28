@@ -53,7 +53,6 @@ import androidx.compose.ui.unit.sp
 import co.touchlab.kermit.Logger
 import com.russhwolf.settings.Settings
 import coredevices.pebble.Platform
-import coredevices.pebble.rememberLibPebble
 import coredevices.pebble.services.AppStoreHomeResult
 import coredevices.pebble.services.LanguagePackRepository
 import coredevices.pebble.services.PebbleWebServices
@@ -93,6 +92,7 @@ import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDeviceInRecovery
 import io.rebble.libpebblecommon.connection.FirmwareUpdateCheckResult
 import io.rebble.libpebblecommon.connection.LibPebble
+import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdateTrigger
 import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdater
 import io.rebble.libpebblecommon.connection.endpointmanager.LanguagePackInstallState
 import io.rebble.libpebblecommon.connection.endpointmanager.installing
@@ -129,7 +129,6 @@ fun WatchOnboardingScreen(
     var haveStartedFwupSinceLastConnection by remember { mutableStateOf(false) }
     val watchOnboardingFinished: WatchOnboardingFinished = koinInject()
     val appSettings: Settings = koinInject()
-    val libPebbleConfig by rememberLibPebble().config.collectAsState()
     val snackbarDisplay =
         remember { SnackbarDisplay { scope.launch { snackbarHostState.showSnackbar(message = it) } } }
     val settings = rememberSettingsItemsState(
@@ -205,7 +204,7 @@ fun WatchOnboardingScreen(
                                 logger.d { "Starting firmware update from onboarding screen" }
                                 haveStartedFwupSinceLastConnection = true
                                 haveUpdatedFirmware = true
-                                connectedWatch.updateFirmware(firmwareUpdateAvailable)
+                                connectedWatch.updateFirmware(firmwareUpdateAvailable, FirmwareUpdateTrigger.Ui)
                             }
                         }
 
@@ -240,13 +239,11 @@ fun WatchOnboardingScreen(
                         }
 
                         // Before the apps, since adding one can ask for permissions.
-                        if (libPebbleConfig.watchConfig.enablePlugins) {
-                            LaunchedEffect(Unit) { appSettings.setHasSeenPermissionsIntro(true) }
-                            SectionText("App permissions")
-                            Spacer(modifier = Modifier.height(15.dp))
-                            PermissionsIntroContent(settings)
-                            SectionDivider()
-                        }
+                        LaunchedEffect(Unit) { appSettings.setHasSeenPermissionsIntro(true) }
+                        SectionText("App permissions")
+                        Spacer(modifier = Modifier.height(15.dp))
+                        PermissionsIntroContent(settings)
+                        SectionDivider()
                         OnboardingAppCarousel(
                             header = "Add some Watchfaces",
                             storeHome = pebbleStoreHomes[AppType.Watchface],

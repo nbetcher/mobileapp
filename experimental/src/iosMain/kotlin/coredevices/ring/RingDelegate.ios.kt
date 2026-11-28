@@ -3,10 +3,11 @@ package coredevices.ring
 import co.touchlab.kermit.Logger
 import com.russhwolf.settings.Settings
 import coredevices.ring.agent.builtin_servlets.clock.clockUnavailableReason
-import coredevices.ring.agent.builtin_servlets.reminders.IOSBuiltInReminderIntegration
 import coredevices.ring.database.firestore.FirestoreKnownRingsSync
 import coredevices.ring.database.firestore.dao.FirestoreRecordingsDao
+import coredevices.ring.reminders.ReminderScheduler
 import coredevices.ring.service.BackgroundRingService
+import coredevices.ring.service.PlatformIndexNotificationManager
 import coredevices.util.CoreConfigHolder
 import coredevices.util.Permission
 
@@ -16,6 +17,8 @@ actual class RingDelegate(
     private val recordingsDao: FirestoreRecordingsDao,
     private val settings: Settings,
     private val firestoreKnownRingsSync: FirestoreKnownRingsSync,
+    private val reminderScheduler: ReminderScheduler,
+    private val indexNotificationManager: PlatformIndexNotificationManager,
 ) {
     companion object {
         private val logger = Logger.withTag("RingDelegate")
@@ -27,10 +30,12 @@ actual class RingDelegate(
      */
     actual suspend fun init() {
         try {
-            IOSBuiltInReminderIntegration.ensureCategoryRegistered()
+            reminderScheduler.ensureCategoryRegistered()
         } catch (e: Exception) {
             logger.e(e) { "Failed to register notification category for reminders" }
         }
+        reminderScheduler.registerWatchActions()
+        indexNotificationManager.registerWatchActions()
         listenForUserPresent(recordingsDao, coreConfigHolder, settings)
         if (!backgroundRingService.isRunning.value) {
             backgroundRingService.startRingSyncJob()

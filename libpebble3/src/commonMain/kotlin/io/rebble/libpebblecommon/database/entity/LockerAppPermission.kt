@@ -1,5 +1,6 @@
 package io.rebble.libpebblecommon.database.entity
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import kotlin.uuid.Uuid
 
@@ -18,4 +19,18 @@ data class LockerAppPermission(
     val lastUsedAtMs: Long? = null,
     /** The user has looked at this request without deciding: hides its locker card. */
     val seenAtMs: Long? = null,
+    /**
+     * The app asked for it: by using it, or by declaring it required. Only then does an undecided one
+     * prompt (notification, card); an optional one waits for the app to use it.
+     */
+    val askedAtMs: Long? = null,
+    /** From the installed version's declaration of it: why the app wants it. */
+    val reason: String? = null,
+    /** From the same declaration; null when the app doesn't say which permissions are required. */
+    val required: Boolean? = null,
+    /** The installed version of the app declares this permission in its manifest. */
+    @ColumnInfo(defaultValue = "0")
+    val declared: Boolean = false,
 )
+
+data class PermissionDeclaration(val reason: String?, val required: Boolean?)

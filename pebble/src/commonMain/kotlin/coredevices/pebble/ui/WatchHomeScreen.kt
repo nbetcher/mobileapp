@@ -13,6 +13,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -355,6 +356,30 @@ fun WatchHomeScreen(
                 },
             )
         }
+        val pendingBootConfig by deepLinkHandler.pendingBootConfig.collectAsState()
+        pendingBootConfig?.let { pending ->
+            AlertDialog(
+                onDismissRequest = deepLinkHandler::dismissPendingBootConfig,
+                title = { Text("Change Pebble services?") },
+                text = {
+                    Text(
+                        "A link wants to sign you in to Pebble web services at ${pending.host}. " +
+                                "This server will receive your app store, locker and watchapp " +
+                                "account data. Only continue if you trust it."
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = deepLinkHandler::confirmPendingBootConfig) {
+                        Text("Continue")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = deepLinkHandler::dismissPendingBootConfig) {
+                        Text("Cancel")
+                    }
+                },
+            )
+        }
         LaunchedEffect(Unit) {
             scope.launch {
                 deepLinkHandler.snackBarMessages.collect { message ->
@@ -402,8 +427,7 @@ fun WatchHomeScreen(
                 missingPermissions.value.filter {
                     it in listOf(
                         Permission.SetAlarms,
-                        Permission.Reminders,
-                        Permission.AlarmKit,
+                        Permission.Reminders
                     )
                 }
             }
@@ -471,9 +495,7 @@ fun WatchHomeScreen(
         val rings by ringsFlow.collectAsState(initial = libIndex.rings.value)
         var hasSeenWatchOnboarding by remember { mutableStateOf(settings.hasSeenWatchOnboarding())}
         var hasSeenRingOnboarding by remember { mutableStateOf(settings.hasSeenRingOnboarding())}
-        val pluginsEnabled = libPebble.config.collectAsState().value.watchConfig.enablePlugins
-        // Re-read when plugins are switched, because switching them off resets it.
-        var hasSeenPermissionsIntro by remember(pluginsEnabled) { mutableStateOf(settings.hasSeenPermissionsIntro()) }
+        var hasSeenPermissionsIntro by remember { mutableStateOf(settings.hasSeenPermissionsIntro()) }
         var startingOnboarding = false
         if (watches.any { it is CommonConnectedDevice } && !hasSeenWatchOnboarding) {
             hasSeenWatchOnboarding = true
@@ -488,7 +510,7 @@ fun WatchHomeScreen(
             startingOnboarding = true
         }
         // Watch and ring onboarding show this themselves, so only people past one get the dialog.
-        if (!startingOnboarding && (hasSeenWatchOnboarding || hasSeenRingOnboarding) && pluginsEnabled &&
+        if (!startingOnboarding && (hasSeenWatchOnboarding || hasSeenRingOnboarding) &&
             !hasSeenPermissionsIntro
         ) {
             PermissionsIntroDialog(onDismissRequest = {
@@ -932,6 +954,7 @@ fun TopBarIconButtonWithToolTip(
     icon: ImageVector,
     description: String,
     enabled: Boolean = true,
+    badge: @Composable BoxScope.() -> Unit = {},
 ) {
     val tooltipState = remember { TooltipState(isPersistent = false) }
     TooltipBox(
@@ -944,10 +967,12 @@ fun TopBarIconButtonWithToolTip(
         state = tooltipState
     ) {
         IconButton(onClick = onClick, enabled = enabled) {
-            Icon(
-                imageVector = icon,
-                contentDescription = description
-            )
+            BadgedBox(badge = badge) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = description
+                )
+            }
         }
     }
 }

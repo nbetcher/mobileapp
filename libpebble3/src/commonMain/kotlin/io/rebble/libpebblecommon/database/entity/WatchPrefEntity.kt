@@ -4,6 +4,7 @@ import androidx.compose.runtime.Immutable
 import co.touchlab.kermit.Logger
 import coredev.BlobDatabase
 import coredev.GenerateRoomEntity
+import io.rebble.libpebblecommon.LibPebbleConfig
 import io.rebble.libpebblecommon.SystemAppIDs.HEALTH_APP_UUID
 import io.rebble.libpebblecommon.SystemAppIDs.QUIET_TIME_TOGGLE_UUID
 import io.rebble.libpebblecommon.SystemAppIDs.TIMELINE_FUTURE_UUID
@@ -14,6 +15,7 @@ import io.rebble.libpebblecommon.database.dao.ValueParams
 import io.rebble.libpebblecommon.database.dao.WatchPreference
 import io.rebble.libpebblecommon.database.entity.QuickLaunchSetting.Companion.toJson
 import io.rebble.libpebblecommon.metadata.WatchType
+import io.rebble.libpebblecommon.packets.ProtocolCapsFlag
 import io.rebble.libpebblecommon.packets.blobdb.TimelineAttribute
 import io.rebble.libpebblecommon.packets.blobdb.TimelineItem.Attribute
 import io.rebble.libpebblecommon.services.blobdb.DbWrite
@@ -42,6 +44,9 @@ import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 import kotlin.uuid.Uuid
+
+fun watchReceivesWatchPrefs(capabilities: Set<ProtocolCapsFlag>, config: LibPebbleConfig): Boolean =
+    ProtocolCapsFlag.SupportsBlobDbVersion in capabilities && config.watchConfig.enableWatchSettingsSync
 
 @Immutable
 @GenerateRoomEntity(
@@ -274,6 +279,7 @@ enum class BoolWatchPref(
     NotificationVibeDelay("notifVibeDelay", "Delay Notification Vibration", true, description = "Delay notification vibration until the notification is visible (after animations)"),
     NotificationBacklight("notifBacklight", "Notifications - Backlight", true, description = "Turn on the backlight when a notification arrives"),
     RespectPhoneSilence("notifRespectPhoneSilence", "Respect Phone Do Not Disturb", false, description = "Notifications silenced by the phone's Do Not Disturb / Focus are delivered quietly (no popup, vibration or backlight)"),
+    NotificationDismissalSync("notifDismissalSync", "Sync Notification Dismissals", false, description = "Notifications dismissed or acted on are removed from the watch's notification history completely (otherwise they are just removed if visible in the notification popup)"),
     MenuScrollWrapAround("menuScrollWrapAround", "Menu Scrolling - Wrap Around", false, description = "Up button will go to the bottom of menus"),
     QuietTimeMotionBacklight("dndMotionBacklight", "Quiet Time - Motion Backlight", true, description = "Enable motion backlight during Quiet Time"),
     QuietTimeTouchBacklight("dndTouchBacklight", "Quiet Time - Touch Backlight", true, description = "Enable touch backlight during Quiet Time"),
@@ -437,6 +443,12 @@ enum class VibeScore(override val code: UByte, override val displayName: String)
     Mario(12u, "Mario"),
     AlarmsLPM(13u, "ALARMS LPM"),
     Gentle(14u, "Gentle"),
+    DoublePulseMedium(15u, "Double Pulse Medium"),
+    PebbleMorse(16u, "Pebble Morse"),
+    Heartbeat(17u, "Heartbeat"),
+    DoubleTap(18u, "Double Tap"),
+    Wave(19u, "Wave"),
+    Imperial(20u, "Imperial"),
 }
 
 enum class MenuScrollVibeBehaviour(override val code: UByte, override val displayName: String) : WatchPrefEnum {
@@ -452,6 +464,24 @@ enum class WindUnits(override val code: UByte, override val displayName: String)
     Mph(2u, "mph"),
     MetersPerSecond(3u, "m/s"),
     Knots(4u, "knots"),
+    ;
+
+    fun resolved(imperialUnits: Boolean): WindUnits = when {
+        this != FromDistance -> this
+        imperialUnits -> Mph
+        else -> KmH
+    }
+}
+
+/** Temperature is labelled separately from distance so the UK (Celsius, but miles) is expressible. */
+enum class TemperatureUnits(override val code: UByte, override val displayName: String) : WatchPrefEnum {
+    FromDistance(0u, "Automatic"),
+    Celsius(1u, "°C"),
+    Fahrenheit(2u, "°F"),
+    ;
+
+    fun isFahrenheit(imperialUnits: Boolean): Boolean =
+        this == Fahrenheit || (this == FromDistance && imperialUnits)
 }
 
 enum class MotionSensitivityLevel(override val code: UByte, override val displayName: String) : WatchPrefEnum {
@@ -560,6 +590,12 @@ enum class EnumWatchPref(
             VibeScore.NudgeNudge,
             VibeScore.Jackhammer,
             VibeScore.Mario,
+            VibeScore.DoublePulseMedium,
+            VibeScore.PebbleMorse,
+            VibeScore.Heartbeat,
+            VibeScore.DoubleTap,
+            VibeScore.Wave,
+            VibeScore.Imperial,
         ),
     ),
     VibeScoreCalls(
@@ -574,6 +610,12 @@ enum class EnumWatchPref(
             VibeScore.NudgeNudge,
             VibeScore.Jackhammer,
             VibeScore.Mario,
+            VibeScore.DoublePulseMedium,
+            VibeScore.PebbleMorse,
+            VibeScore.Heartbeat,
+            VibeScore.DoubleTap,
+            VibeScore.Wave,
+            VibeScore.Imperial,
         ),
     ),
     VibeScoreAlarms(
@@ -587,6 +629,12 @@ enum class EnumWatchPref(
             VibeScore.Reveille,
             VibeScore.Mario,
             VibeScore.Gentle,
+            VibeScore.DoublePulseMedium,
+            VibeScore.PebbleMorse,
+            VibeScore.Heartbeat,
+            VibeScore.DoubleTap,
+            VibeScore.Wave,
+            VibeScore.Imperial,
         ),
     ),
     MenuScrollVibe(
@@ -634,6 +682,13 @@ enum class EnumWatchPref(
         description = "Automatic follows the Imperial Units setting.",
         defaultValue = WindUnits.FromDistance,
         options = WindUnits.entries,
+    ),
+    Temperature(
+        id = "unitsTemperature",
+        displayName = "Temperature",
+        description = "Automatic follows the Imperial Units setting.",
+        defaultValue = TemperatureUnits.FromDistance,
+        options = TemperatureUnits.entries,
     ),
     TimelineQuickViewUnsupportedFaces(
         id = "timelineQuickViewWatchfaceFit",

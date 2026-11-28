@@ -86,7 +86,8 @@ import io.rebble.libpebblecommon.connection.endpointmanager.CompanionAppLifecycl
 import io.rebble.libpebblecommon.connection.endpointmanager.DebugPebbleProtocolSender
 import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdater
 import io.rebble.libpebblecommon.connection.endpointmanager.LanguagePackInstaller
-import io.rebble.libpebblecommon.connection.endpointmanager.InterruptedFirmwareUpdates
+import io.rebble.libpebblecommon.connection.endpointmanager.LastFirmwareUpdateStates
+import io.rebble.libpebblecommon.connection.endpointmanager.PendingFirmwareInstalls
 import io.rebble.libpebblecommon.connection.endpointmanager.RealFirmwareUpdater
 import io.rebble.libpebblecommon.connection.endpointmanager.RealLanguagePackInstaller
 import io.rebble.libpebblecommon.connection.endpointmanager.audio.AudioFrameDecoder
@@ -137,7 +138,10 @@ import io.rebble.libpebblecommon.plugin.JsPluginFactory
 import io.rebble.libpebblecommon.plugin.CalendarPlugin
 import io.rebble.libpebblecommon.plugin.FindMyPhonePlugin
 import io.rebble.libpebblecommon.plugin.PhoneStatePlugin
+import io.rebble.libpebblecommon.permissions.AppDataUsage
+import io.rebble.libpebblecommon.permissions.AppDataUsageApi
 import io.rebble.libpebblecommon.permissions.AppPermissions
+import io.rebble.libpebblecommon.permissions.DataUsageRecorder
 import io.rebble.libpebblecommon.permissions.RunningApps
 import io.rebble.libpebblecommon.permissions.InstalledApps
 import io.rebble.libpebblecommon.permissions.LockerInstalledApps
@@ -145,6 +149,9 @@ import io.rebble.libpebblecommon.plugin.PlatformPlugins
 import io.rebble.libpebblecommon.plugin.NativePlugin
 import io.rebble.libpebblecommon.plugin.LockerPluginLoader
 import io.rebble.libpebblecommon.plugin.PluginOAuthApi
+import io.rebble.libpebblecommon.plugin.PluginActionLog
+import io.rebble.libpebblecommon.plugin.PluginActionLogApi
+import io.rebble.libpebblecommon.plugin.PluginActionRecorder
 import io.rebble.libpebblecommon.plugin.PluginClient
 import io.rebble.libpebblecommon.plugin.PluginLogs
 import io.rebble.libpebblecommon.plugin.PluginRegistry
@@ -385,6 +392,8 @@ fun initKoin(
                 single { get<Database>().calendarDao() }
                 single { get<Database>().healthSettingsDao() } binds arrayOf(HealthSettingsEntryDao::class, HealthSettingsEntryRealDao::class)
                 single { get<Database>().lockerAppPermissionDao() }
+                single { get<Database>().appDataUsageDao() }
+                single { get<Database>().pluginActionLogDao() }
                 single { get<Database>().notificationsDao() }
                 single { get<Database>().contactDao() }
                 single { get<Database>().vibePatternDao() }
@@ -407,7 +416,7 @@ fun initKoin(
                 singleOf(::Housekeeping)
                 singleOf(::RemoteTimelineEmulator)
                 singleOf(::WeatherManager)
-                singleOf(::HttpInterceptorManager)
+                single { HttpInterceptorManager(get<RemoteTimelineEmulator>(), get<InjectedPKJSHttpInterceptors>(), get()) }
                 singleOf(::RealWatchPrefs) bind WatchPrefs::class
                 singleOf(::WebSyncManager) bind RequestSync::class
                 singleOf(::TimelineApi) bind Timeline::class
@@ -419,6 +428,8 @@ fun initKoin(
                         get(),
                         get(),
                         get(), // lockerPluginLoader
+                        get(),
+                        get(),
                         get(),
                         get(),
                         get(),
@@ -464,6 +475,7 @@ fun initKoin(
                 single {
                     DevConnectionCloudpebbleProxy(
                         libPebble = get(),
+                        lastStates = get(),
                         url = "wss://cloudpebble-proxy.repebble.com/device-v2",
                         protocolVersion = CloudpebbleProxyProtocolVersion.V2,
                         scope = get(),
@@ -496,6 +508,8 @@ fun initKoin(
                 singleOf(::RunningApps)
                 singleOf(::LockerInstalledApps) bind InstalledApps::class
                 singleOf(::AppPermissions)
+                singleOf(::AppDataUsage) binds arrayOf(DataUsageRecorder::class, AppDataUsageApi::class)
+                singleOf(::PluginActionLog) binds arrayOf(PluginActionRecorder::class, PluginActionLogApi::class)
                 singleOf(::PluginClient)
                 single<PluginFileSystem> { platformPluginFileSystem(get(), get()) }
                 singleOf(::PluginFileAccess)
@@ -506,14 +520,15 @@ fun initKoin(
                         { get<AppPermissions>().subjectOf(it) },
                         { app, permission -> get<AppPermissions>().callerKeys(app, permission) },
                         { caller, plugin, request ->
-                            get<PluginClient>().observe(caller, plugin, request.category, request.item, request.properties, request.iconPixelSize)
+                            get<PluginClient>().observe(caller, plugin, request.category, request.item, request.properties, request.iconPixelSize, request.limit)
                         },
                     )
                 }
-                single { JsPluginFactory(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), pluginOAuthApi) }
+                single { JsPluginFactory(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), pluginOAuthApi) }
                 singleOf(::LockerPluginLoader)
                 singleOf(::FirmwareDownloader)
-                singleOf(::InterruptedFirmwareUpdates)
+                singleOf(::PendingFirmwareInstalls)
+                singleOf(::LastFirmwareUpdateStates)
                 singleOf(::JsTokenUtil)
                 singleOf(::Datalogging)
                 singleOf(::Health)

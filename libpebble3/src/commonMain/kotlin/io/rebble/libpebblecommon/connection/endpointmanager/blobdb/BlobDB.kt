@@ -342,9 +342,18 @@ class BlobDB(
         params: ValueParams,
         blobDbVersion: Int,
     ) {
-        val value = item.record.value(params)
         val key = item.record.key()
         val keyString = key.keyAsString(db.databaseId())
+        if (item.record.skipForWatch(params)) {
+            logger.d { "handleInsert: skipping for this watch: ${db.databaseId()} $keyString" }
+            db.markSyncedToWatch(
+                transport = identifier.asString,
+                item = item,
+                hashcode = item.recordHashcode,
+            )
+            return
+        }
+        val value = item.record.value(params)
         if (value == null) {
             logger.d { "handleInsert: value is null: ${db.databaseId()} $keyString" }
             return
@@ -385,16 +394,18 @@ class BlobDB(
         if (db.databaseId() == BlobDatabase.WatchPrefs) {
             prefSupport.recordInsertResult(key.toByteArray().decodeToString().trimEnd(NUL_CHAR), result?.responseValue)
         }
-        when (result?.responseValue) {
-            BlobResponse.BlobStatus.Success,
-            // Stale = mark as synced (watch will never accept this record)
-            BlobResponse.BlobStatus.DataStale-> db.markSyncedToWatch(
+        val markSynced = when (result?.responseValue) {
+            BlobResponse.BlobStatus.Success -> true
+            // Firmware also returns stale for pref keys it doesn't know (yet), so keep retrying those.
+            BlobResponse.BlobStatus.DataStale -> db.databaseId() != BlobDatabase.WatchPrefs
+            else -> false
+        }
+        if (markSynced) {
+            db.markSyncedToWatch(
                 transport = identifier.asString,
                 item = item,
                 hashcode = item.recordHashcode,
             )
-
-            else -> Unit
         }
     }
 

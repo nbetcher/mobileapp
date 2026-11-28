@@ -19,6 +19,7 @@ import io.rebble.libpebblecommon.connection.bt.ble.transport.GattServerManager
 import io.rebble.libpebblecommon.connection.bt.ble.transport.impl.configureKableCentral
 import io.rebble.libpebblecommon.connection.endpointmanager.timeline.ActionOverrides
 import io.rebble.libpebblecommon.connection.endpointmanager.timeline.CustomTimelineActionHandler
+import io.rebble.libpebblecommon.connection.endpointmanager.timeline.InternalActionHandler
 import io.rebble.libpebblecommon.contacts.PhoneContactsSyncer
 import io.rebble.libpebblecommon.database.dao.AppWithCount
 import io.rebble.libpebblecommon.database.dao.ChannelAndCount
@@ -37,6 +38,7 @@ import io.rebble.libpebblecommon.database.entity.OverlayDataEntity
 import io.rebble.libpebblecommon.database.entity.TimelineNotification
 import io.rebble.libpebblecommon.database.entity.WeatherAppEntry
 import io.rebble.libpebblecommon.database.entity.TimelinePin
+import io.rebble.libpebblecommon.database.entity.TimelineReminder
 import io.rebble.libpebblecommon.di.LibPebbleCoroutineScope
 import io.rebble.libpebblecommon.di.initKoin
 import io.rebble.libpebblecommon.health.Health
@@ -56,6 +58,8 @@ import io.rebble.libpebblecommon.notification.VibePattern
 import io.rebble.libpebblecommon.packets.ProtocolCapsFlag
 import io.rebble.libpebblecommon.performPlatformSpecificInit
 import io.rebble.libpebblecommon.plugin.LockerPluginLoader
+import io.rebble.libpebblecommon.permissions.AppDataUsage
+import io.rebble.libpebblecommon.permissions.AppDataUsageApi
 import io.rebble.libpebblecommon.permissions.AppPermissions
 import io.rebble.libpebblecommon.permissions.AppPermissionsApi
 import io.rebble.libpebblecommon.permissions.PermissionDecisionRecord
@@ -66,6 +70,8 @@ import io.rebble.libpebblecommon.plugin.ConfigMessageTarget
 import io.rebble.libpebblecommon.plugin.ActionResult
 import io.rebble.libpebblecommon.plugin.IconPixelSize
 import io.rebble.libpebblecommon.plugin.NativePlugin
+import io.rebble.libpebblecommon.plugin.PluginActionLog
+import io.rebble.libpebblecommon.plugin.PluginActionLogApi
 import io.rebble.libpebblecommon.plugin.PluginCaller
 import io.rebble.libpebblecommon.plugin.PluginClient
 import io.rebble.libpebblecommon.plugin.PluginErrors
@@ -114,7 +120,7 @@ sealed class PebbleConnectionEvent {
 interface LibPebble : Scanning, RequestSync, LockerApi, NotificationApps, CallManagement, Calendar,
     OtherPebbleApps, PKJSToken, Watches, Errors, Contacts, AnalyticsEvents, HealthApi, WatchPrefs,
     SystemGeolocation, Timeline, Vibrations, Weather, HealthDataApi, Plugins, AppPermissionsApi,
-    PluginFileAccessApi, NotificationReplies {
+    PluginFileAccessApi, NotificationReplies, AppDataUsageApi, PluginActionLogApi {
     fun init()
 
     val config: StateFlow<LibPebbleConfig>
@@ -238,6 +244,9 @@ interface Plugins {
     /** For plugins outside libpebble3, whose Koin context is isolated. */
     fun registerPlugin(plugin: NativePlugin)
 
+    /** Removes a plugin added with [registerPlugin]; a built-in disappears from every listing. */
+    fun unregisterPlugin(pluginUuid: Uuid)
+
     /** Built-in plugins (phone-side data sources like Music or Weather), not backed by a pbw. */
     fun nativePlugins(): Flow<List<PluginMetadata>>
 
@@ -267,6 +276,7 @@ interface Plugins {
         item: String,
         properties: List<String>? = null,
         iconPixelSize: IconPixelSize? = null,
+        limit: Int? = null,
     ): Flow<SourceUpdate>
 
     /** The first update, or a [PluginErrors.TIMEOUT] error. */
@@ -308,6 +318,14 @@ sealed interface DisplayedNotificationReplyResult {
 interface Timeline {
     fun insertOrReplace(pin: TimelinePin)
     fun delete(pinUuid: Uuid)
+    suspend fun insertOrReplace(reminder: TimelineReminder)
+    suspend fun deleteReminder(reminderUuid: Uuid)
+
+    /**
+     * Handles notification and reminder actions with this `internalType`. The action is stored
+     * with its item, so this works for items sent before an app restart.
+     */
+    fun setActionHandler(internalType: String, handler: InternalActionHandler)
 }
 
 interface Errors {
@@ -362,11 +380,8 @@ sealed class FirmwareUpdateCheckResult {
         val version: FirmwareVersion,
         val url: String,
         val notes: String,
-        /**
-         * Whether installing this over a higher version is intended: the update server flagged it
-         * as a downgrade, or the user picked the file themselves.
-         */
-        val canDowngrade: Boolean = false,
+        /** Whether the watch boots this after a normal install, rather than going through recovery. */
+        val installsDirectly: Boolean,
     ) : FirmwareUpdateCheckResult()
 
     data object FoundNoUpdate : FirmwareUpdateCheckResult()
@@ -440,6 +455,7 @@ interface LockerApi {
     suspend fun getAppFile(uuid: Uuid, name: String): String?
     suspend fun setAppOrder(id: Uuid, order: Int)
     suspend fun waitUntilAppSyncedToWatch(id: Uuid, identifier: PebbleIdentifier, timeout: Duration): Boolean
+    /** Also erases everything the app stored, on this phone and on connected watches. */
     suspend fun removeApp(id: Uuid): Boolean
     suspend fun addAppToLocker(app: LockerEntry, granted: Map<String, Boolean?> = emptyMap())
     /** [permissions]: the user's decisions for these apps from other devices or the web store. */
@@ -546,6 +562,8 @@ class LibPebble3(
     private val watchPreferences: WatchPrefs,
     private val weatherManager: WeatherManager,
     private val appPermissions: AppPermissions,
+    private val appDataUsage: AppDataUsage,
+    pluginActionLog: PluginActionLog,
     pluginClient: PluginClient,
     pluginFileAccess: PluginFileAccess,
     private val notificationReplies: NotificationReplies,
@@ -558,7 +576,8 @@ class LibPebble3(
     Vibrations by notificationApi, WatchPrefs by watchPreferences, Weather by weatherManager,
     HealthDataApi by health, Plugins by pluginClient,
     AppPermissionsApi by appPermissions, PluginFileAccessApi by pluginFileAccess,
-    NotificationReplies by notificationReplies {
+    NotificationReplies by notificationReplies, AppDataUsageApi by appDataUsage,
+    PluginActionLogApi by pluginActionLog {
     private val logger = Logger.withTag("LibPebble3")
     private val initialized = AtomicBoolean(false)
 
@@ -568,6 +587,7 @@ class LibPebble3(
             return
         }
         appPermissions.init()
+        appDataUsage.init()
         libPebbleCoroutineScope.launch { respectDoNotDisturbMigrator.migrateIfNeeded() }
         WatchHardwarePlatform.init(libPebbleCoroutineScope, libPebbleConfigFlow.config)
         bluetoothStateProvider.init()
@@ -655,6 +675,8 @@ class LibPebble3(
 
     companion object {
         private lateinit var koin: Koin
+
+        internal val isCreated: Boolean get() = ::koin.isInitialized
 
         fun create(
             /**

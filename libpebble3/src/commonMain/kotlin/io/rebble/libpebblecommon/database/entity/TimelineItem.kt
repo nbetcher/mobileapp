@@ -22,6 +22,7 @@ import io.rebble.libpebblecommon.util.TimelineAttributeFactory.createUIntAttribu
 import io.rebble.libpebblecommon.util.TimelineAttributeFactory.createUIntListAttribute
 import io.rebble.libpebblecommon.util.toProtocolNumber
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 import kotlin.uuid.Uuid
 
 @GenerateRoomEntity(
@@ -40,6 +41,13 @@ data class TimelineNotification(
 
     ) : DbTimelineItem {
     override fun type() = TimelineItem.Type.Notification
+
+    override fun skipForWatch(params: ValueParams): Boolean {
+        val config = params.libPebbleConfigFlow.value
+        return TimelineItem.Flag.SILENT in content.flags &&
+            config.notificationConfig.respectDoNotDisturb &&
+            !watchReceivesWatchPrefs(params.capabilities, config)
+    }
 }
 
 @GenerateRoomEntity(
@@ -158,10 +166,22 @@ data class BaseAction(
     val type: Type,
     val attributes: List<BaseAttribute>,
     val internalType: String? = null,
+    val pluginAction: PluginActionRef? = null,
+    /** Phone-only: passed to the handler registered for [internalType]. */
+    val internalData: String? = null,
 ) {
     fun asAction(): TimelineItem.Action =
         TimelineItem.Action(actionID, type, attributes.map { it.asAttribute() })
 }
+
+/** Phone-only: an action of the item's parent plugin, run when this one is invoked. */
+@Serializable
+data class PluginActionRef(
+    val action: String,
+    val args: JsonObject = JsonObject(emptyMap()),
+    /** The arg the user's reply goes in, for an action that asks for one. */
+    val inputArg: String? = null,
+)
 
 data class TimelineItemFields(
     val parentId: Uuid,

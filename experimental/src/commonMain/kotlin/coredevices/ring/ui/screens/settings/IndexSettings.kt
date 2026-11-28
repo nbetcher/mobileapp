@@ -69,7 +69,6 @@ import coredevices.ring.agent.integrations.providers.IntegrationProvider
 import coredevices.ring.agent.integrations.providers.IntegrationProviderRepository
 import coredevices.ring.agent.integrations.providers.LegacyDestination
 import coredevices.ring.data.NoteShortcutType
-import coredevices.ring.external.indexwebhook.IndexWebhookSettingsViewModel
 import coredevices.ring.ui.PreviewWrapper
 import coredevices.ring.ui.components.SectionHeader
 import coredevices.ring.ui.navigation.RingRoutes
@@ -157,10 +156,10 @@ internal fun UriHandler.openUrlSafely(url: String) {
 fun IndexSettings(coreNav: CoreNav) {
     val viewModel = koinViewModel<SettingsViewModel>()
     val snackbarHostState = remember { SnackbarHostState() }
-    val webhookViewModel = koinViewModel<IndexWebhookSettingsViewModel>()
     val debugDetailsEnabled by viewModel.debugDetailsEnabled.collectAsState()
     val showNoteShortcutDialog by viewModel.showNoteShortcutDialog.collectAsState()
     val autoDismissActionNotifications by viewModel.autoDismissActionNotifications.collectAsState()
+    val actionValidationEnabled by viewModel.actionValidationEnabled.collectAsState()
     val pendingIntentScanEnabled by viewModel.pendingIntentScanEnabled.collectAsState()
     val scanByPairedAddress by viewModel.scanByPairedAddress.collectAsState()
     val diagnosticsState by viewModel.diagnosticsState.collectAsState()
@@ -185,12 +184,10 @@ fun IndexSettings(coreNav: CoreNav) {
     val platformSttAvailable by produceState(false) {
         value = withContext(Dispatchers.Default) { platformSpeechRecognizer.isAvailable() }
     }
-    val webhookUrl by webhookViewModel.webhookUrl.collectAsState()
-    val configuredWebhookGesture by webhookViewModel.configuredGesture.collectAsState()
-    val webhookIsLinked = !webhookUrl.isNullOrBlank()
     val currentRingFirmware by viewModel.currentRingFirmware.collectAsStateWithLifecycle()
     val currentRing by viewModel.currentRingName.collectAsStateWithLifecycle()
     val currentRingPaired = viewModel.ringPaired.collectAsStateWithLifecycle()
+    val batteryLife by viewModel.batteryLife.collectAsStateWithLifecycle()
     val ringPaired by remember { derivedStateOf { currentRingPaired.value != null } }
     val accountUsername by viewModel.username.collectAsStateWithLifecycle()
     val noteShortcut by viewModel.noteShortcut.collectAsState()
@@ -426,6 +423,9 @@ fun IndexSettings(coreNav: CoreNav) {
                     onShowModelDownload = { coreNav.navigateTo(CommonRoutes.SpeechModelDownloadDialog) },
                 )
             }
+            if (ringPaired && coreConfig.showIndexBatteryLife) {
+                item { BatteryLifeSection(batteryLife) }
+            }
             item {
                 SectionHeader(
                     modifier = Modifier.padding(top = 22.dp, bottom = 2.dp, start = 16.dp, end = 16.dp),
@@ -491,14 +491,15 @@ fun IndexSettings(coreNav: CoreNav) {
             }
             item {
                 SettingsRow(
-                    title = "Webhook",
-                    subtitle = if (webhookIsLinked) "Configured, tap to modify" else "Not Linked",
-                    onClick = {
-                        configuredWebhookGesture
-                            ?.let { webhookViewModel.openDialog(it) }
-                            ?: webhookViewModel.openDialog()
-                    },
-                )
+                    title = "Validate agent choices",
+                    subtitle = "When online, asks for your confirmation before taking actions you may not have intended",
+                    onClick = viewModel::toggleActionValidation,
+                ) {
+                    Switch(
+                        checked = actionValidationEnabled,
+                        onCheckedChange = { viewModel.toggleActionValidation() }
+                    )
+                }
             }
             item {
                 SettingsRow(
@@ -559,6 +560,7 @@ fun IndexSettings(coreNav: CoreNav) {
                     trailing = {
                         Switch(
                             checked = pendingIntentScanEnabled,
+                            enabled = platform.isAndroid,
                             onCheckedChange = { togglePendingIntentScanEnabled() }
                         )
                     }
@@ -581,6 +583,7 @@ fun IndexSettings(coreNav: CoreNav) {
                     trailing = {
                         Switch(
                             checked = scanByPairedAddress,
+                            enabled = platform.isAndroid,
                             onCheckedChange = { toggleScanByPairedAddress() }
                         )
                     }

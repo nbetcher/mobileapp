@@ -102,6 +102,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.ClipEntry
@@ -180,6 +181,8 @@ import io.rebble.libpebblecommon.connection.KnownPebbleDevice
 import io.rebble.libpebblecommon.database.entity.HRMonitoringInterval
 import io.rebble.libpebblecommon.database.entity.HealthGender
 import io.rebble.libpebblecommon.database.entity.QuietTimeSchedule
+import io.rebble.libpebblecommon.database.entity.currentYear
+import io.rebble.libpebblecommon.database.entity.watchReceivesWatchPrefs
 import io.rebble.libpebblecommon.js.PKJSApp
 import io.rebble.libpebblecommon.metadata.WatchType
 import io.rebble.libpebblecommon.packets.ProtocolCapsFlag
@@ -297,6 +300,7 @@ enum class SettingsGroup(val title: String) {
     CustomVibration("Custom Vibration Patterns"),
     Advanced("Advanced"),
     AutomaticFirmwareUpdatess("Automatic Updates"),
+    AppUsage("App Usage"),
 }
 
 data class SettingsItem(
@@ -337,23 +341,46 @@ private fun LazyListScope.settingsItems(items: List<SettingsItem>) {
             return@forEach
         }
         item(key = "group:${group.name}") {
-            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                Text(
-                    group.title,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(start = 4.dp, bottom = 6.dp),
-                )
-                val cardColor = MaterialTheme.colorScheme.surfaceContainerHigh
-                Card(shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = cardColor)) {
-                    // The items' ListItems paint `surface`, which would hide the card's colour.
-                    MaterialTheme(colorScheme = MaterialTheme.colorScheme.copy(surface = cardColor)) {
-                        Column {
-                            run.forEachIndexed { index, item ->
-                                if (index > 0) HorizontalDivider(Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.background)
-                                item.Item()
-                            }
-                        }
+            CardGroup(group.title, run, Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) { it.Item() }
+        }
+    }
+}
+
+/** [items] in a rounded card under [title], as the settings screen groups its items. */
+@Composable
+internal fun <T> CardGroup(
+    title: String?,
+    items: List<T>,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+    containerColor: Color = MaterialTheme.colorScheme.surfaceContainerHigh,
+    dividerColor: Color = MaterialTheme.colorScheme.background,
+    item: @Composable (T) -> Unit,
+) {
+    Column(modifier = modifier) {
+        title?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(start = 4.dp, bottom = if (subtitle == null) 6.dp else 0.dp),
+            )
+        }
+        subtitle?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 4.dp, bottom = 6.dp),
+            )
+        }
+        Card(shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = containerColor)) {
+            // The items' ListItems paint `surface`, which would hide the card's colour.
+            MaterialTheme(colorScheme = MaterialTheme.colorScheme.copy(surface = containerColor)) {
+                Column {
+                    items.forEachIndexed { index, value ->
+                        if (index > 0) HorizontalDivider(Modifier.padding(horizontal = 16.dp), color = dividerColor)
+                        item(value)
                     }
                 }
             }
@@ -378,10 +405,7 @@ fun settingsBadgeTotal(): Int {
     }
     val appUpdateTracker: AppUpdateTracker = koinInject()
     val appWasUpdated by appUpdateTracker.appWasUpdated.collectAsState()
-    val appUpdated = when (appWasUpdated) {
-        true -> 1
-        false -> 0
-    }
+    val appUpdated = if (appWasUpdated && coreConfig.showAppUpdatedBadge) 1 else 0
     return permissionBadgeCount + updatesAvailable + appUpdated
 }
 
@@ -607,6 +631,7 @@ fun rememberSettingsItemsState(navBarNav: NavBarNav?, snackbarDisplay: SnackbarD
     }
     val healthSettingsNullable by libPebble.healthSettings.collectAsState(null)
     val healthSettings = healthSettingsNullable ?: return null
+    val thisYear = remember { currentYear() }
     val weatherFetcher: WeatherFetcher = koinInject()
     val watches by libPebble.watches.collectAsState(null)
     val watchesCastable = watches ?: return null
@@ -615,6 +640,11 @@ fun rememberSettingsItemsState(navBarNav: NavBarNav?, snackbarDisplay: SnackbarD
             it is KnownPebbleDevice && it.capabilities.contains(
                 ProtocolCapsFlag.SupportsBlobDbVersion
             )
+        }
+    }
+    val anyWatchNeedsPhoneSideDnd = remember(watchesCastable, libPebbleConfig) {
+        watchesCastable.any {
+            it is KnownPebbleDevice && !watchReceivesWatchPrefs(it.capabilities, libPebbleConfig)
         }
     }
     val anyWatchSupportsFiveMinHrm = remember(watchesCastable) {
@@ -658,6 +688,7 @@ fun rememberSettingsItemsState(navBarNav: NavBarNav?, snackbarDisplay: SnackbarD
             rebbleVoiceAvailable,
             platformSttAvailable,
             anyWatchSupportsFiveMinHrm,
+            anyWatchNeedsPhoneSideDnd,
             healthPlatformAvailable,
         ) {
             listOfNotNull(
@@ -718,13 +749,22 @@ fun rememberSettingsItemsState(navBarNav: NavBarNav?, snackbarDisplay: SnackbarD
                         nav.navigateTo(CommonRoutes.RoadmapChangelogRoute)
                     },
                     actionIcon = Icons.AutoMirrored.Default.Launch,
-                    badge = if (showChangelogBadge) "1" else null,
+                    badge = if (showChangelogBadge && coreConfig.showAppUpdatedBadge) "1" else null,
                     onDisplayed = {
                         LaunchedEffect(Unit) {
                             appUpdateTracker.acknowledgeCurrentVersion()
                         }
                     },
                 ) },
+                basicSettingsToggleItem(
+                    title = "Show badge when app was updated",
+                    topLevelType = TopLevelType.Phone,
+                    section = Section.About,
+                    checked = coreConfig.showAppUpdatedBadge,
+                    onCheckChanged = {
+                        coreConfigHolder.update(coreConfig.copy(showAppUpdatedBadge = it))
+                    },
+                ),
                 navBarNav?.let { nav -> basicSettingsActionItem(
                     title = "What’s new in PebbleOS",
                     topLevelType = TopLevelType.Phone,
@@ -790,7 +830,7 @@ fun rememberSettingsItemsState(navBarNav: NavBarNav?, snackbarDisplay: SnackbarD
                 basicSettingsToggleItem(
                     id = SettingsIds.HealthImperialUnits,
                     title = "Imperial Units",
-                    description = "Use miles/feet/inches/lb and Fahrenheit instead of metric units",
+                    description = "Use miles/feet/inches/lb instead of metric units, and Fahrenheit unless Temperature is set under Weather",
                     keywords = "weather health degrees celsius temperature miles",
                     topLevelType = TopLevelType.Phone,
                     section = Section.General,
@@ -798,7 +838,6 @@ fun rememberSettingsItemsState(navBarNav: NavBarNav?, snackbarDisplay: SnackbarD
                     onCheckChanged = {
                         GlobalScope.launch {
                             libPebble.updateImperialUnits(it)
-                            weatherFetcher.fetchWeather(this)
                         }
                     },
                 ),
@@ -922,6 +961,23 @@ fun rememberSettingsItemsState(navBarNav: NavBarNav?, snackbarDisplay: SnackbarD
                         )
                     },
                     show = { pebbleFeatures.supportsNotificationFiltering() },
+                ),
+                basicSettingsToggleItem(
+                    title = "Respect Phone Do Not Disturb (legacy watches)",
+                    description = "Older watches: notifications won't be sent if phone is in Do Not Disturb mode (unless configured for that app/person in phone settings). Does not apply on newer watches (see Watch / Notifications / Respect Phone Do Not Disturb)",
+                    topLevelType = TopLevelType.Phone,
+                    section = Section.Notifications,
+                    checked = libPebbleConfig.notificationConfig.respectDoNotDisturb,
+                    onCheckChanged = {
+                        libPebble.updateConfig(
+                            libPebbleConfig.copy(
+                                notificationConfig = libPebbleConfig.notificationConfig.copy(
+                                    respectDoNotDisturb = it
+                                )
+                            )
+                        )
+                    },
+                    show = { pebbleFeatures.supportsNotificationFiltering() && anyWatchNeedsPhoneSideDnd },
                 ),
                 basicSettingsToggleItem(
                     title = "Mute phone notification effects",
@@ -1395,21 +1451,22 @@ fun rememberSettingsItemsState(navBarNav: NavBarNav?, snackbarDisplay: SnackbarD
                 ),
                 basicSettingsNumberFieldItem(
                     id = SettingsIds.HealthAge,
-                    title = "Age",
+                    title = "Year of birth",
                     topLevelType = TopLevelType.Phone,
                     section = Section.Health,
                     group = SettingsGroup.YourDetails,
                     description = "Used for heart-rate zone calculations",
-                    value = healthSettings.ageYears.toLong(),
+                    keywords = "age",
+                    value = (healthSettings.birthYear ?: (thisYear - healthSettings.ageYears)).toLong(),
                     onValueChange = {
                         libPebble.updateHealthSettings(
-                            healthSettings.copy(ageYears = it.toInt())
+                            healthSettings.copy(birthYear = it.toInt())
                         )
                     },
                     show = { healthSettings.trackingEnabled },
-                    min = 1,
-                    max = 120,
-                    unit = "years",
+                    min = thisYear - 120,
+                    max = thisYear - 1,
+                    unit = "",
                 ),
                 basicSettingsDropdownItem(
                     id = SettingsIds.HealthGenderId,
@@ -1531,7 +1588,7 @@ fun rememberSettingsItemsState(navBarNav: NavBarNav?, snackbarDisplay: SnackbarD
                             GlobalScope.launch { weatherFetcher.fetchWeather(this) }
                         },
                         itemText = { it?.let { plugin -> "Plugin: ${plugin.name}" } ?: "Pebble" },
-                        show = { coreConfig.fetchWeather && libPebbleConfig.watchConfig.enablePlugins && providers.isNotEmpty() },
+                        show = { coreConfig.fetchWeather && providers.isNotEmpty() },
                         selectorBelow = true,
                     )
                 },
@@ -1618,6 +1675,24 @@ fun rememberSettingsItemsState(navBarNav: NavBarNav?, snackbarDisplay: SnackbarD
                         )
                     },
                     isDebugSetting = true,
+                ),
+                basicSettingsToggleItem(
+                    title = "PKJS requests through app instead of Webview",
+                    description = "Watchapps' XMLHttpRequests go through the app, as on iOS, so their data usage is counted. Otherwise the WebView makes them itself. Restart watchapp after changing.",
+                    topLevelType = TopLevelType.Phone,
+                    section = Section.Debug,
+                    checked = libPebbleConfig.watchConfig.pkjsRequestsThroughApp,
+                    onCheckChanged = {
+                        libPebble.updateConfig(
+                            libPebbleConfig.copy(
+                                watchConfig = libPebbleConfig.watchConfig.copy(
+                                    pkjsRequestsThroughApp = it
+                                )
+                            )
+                        )
+                    },
+                    isDebugSetting = true,
+                    show = { platform == Platform.Android },
                 ),
                 basicSettingsToggleItem(
                     title = "Watch settings sync",
@@ -2083,31 +2158,12 @@ fun rememberSettingsItemsState(navBarNav: NavBarNav?, snackbarDisplay: SnackbarD
                     show = { loggedIn != null },
                     isDebugSetting = true,
                 ),
-                basicSettingsToggleItem(
-                    title = "Plugins / permissions preview",
-                    description = "Enable Plugins (a new system for apps to share data and actions), and the new granular app permissions system. This will be enabled for everyone in a future release",
-                    topLevelType = TopLevelType.Phone,
-                    section = Section.Plugins,
-                    checked = libPebbleConfig.watchConfig.enablePlugins,
-                    onCheckChanged = {
-                        // So turning them back on shows the permissions introduction again.
-                        if (!it) settings.setHasSeenPermissionsIntro(false)
-                        libPebble.updateConfig(
-                            libPebbleConfig.copy(
-                                watchConfig = libPebbleConfig.watchConfig.copy(
-                                    enablePlugins = it
-                                )
-                            )
-                        )
-                    },
-                ),
                 navBarNav?.let { nav -> basicSettingsActionItem(
                     title = "Complications",
                     description = "Readings watchfaces should show in their complication slots",
                     topLevelType = TopLevelType.Phone,
                     section = Section.Plugins,
                     action = { nav.navigateTo(PebbleNavBarRoutes.ComplicationsRoute) },
-                    show = { libPebbleConfig.watchConfig.enablePlugins },
                 ) },
                 navBarNav?.let { nav -> basicSettingsActionItem(
                     title = "Preferred sources",
@@ -2115,7 +2171,7 @@ fun rememberSettingsItemsState(navBarNav: NavBarNav?, snackbarDisplay: SnackbarD
                     topLevelType = TopLevelType.Phone,
                     section = Section.Plugins,
                     action = { nav.navigateTo(PebbleNavBarRoutes.PreferredSourcesRoute) },
-                    show = { libPebbleConfig.watchConfig.enablePlugins && hasSharedSources(libPebble.getAllPlugins()) },
+                    show = { hasSharedSources(libPebble.getAllPlugins()) },
                 ) },
                 basicSettingsDropdownItem(
                     id = SettingsIds.PermissionPolicy,
@@ -2134,7 +2190,6 @@ fun rememberSettingsItemsState(navBarNav: NavBarNav?, snackbarDisplay: SnackbarD
                         )
                     },
                     itemText = { it.displayName() },
-                    show = { libPebbleConfig.watchConfig.enablePlugins },
                     selectorBelow = true,
                     details = { PermissionPolicyDetails() },
                 ),
@@ -2157,7 +2212,7 @@ fun rememberSettingsItemsState(navBarNav: NavBarNav?, snackbarDisplay: SnackbarD
                 ),
                 basicSettingsToggleItem(
                     title = "Ask before older apps use permissions",
-                    description = "Otherwise apps built before permissions keep the access they've always had. They can never get more access without updating",
+                    description = "Otherwise apps built before permissions keep the access they've always had. They can never get more access without updating. Some older apps may break, particularly ones that use health data",
                     topLevelType = TopLevelType.Phone,
                     section = Section.Apps,
                     group = SettingsGroup.Permissions,
@@ -2169,7 +2224,6 @@ fun rememberSettingsItemsState(navBarNav: NavBarNav?, snackbarDisplay: SnackbarD
                             )
                         )
                     },
-                    show = { libPebbleConfig.watchConfig.enablePlugins },
                 ),
                 navBarNav?.let { nav -> basicSettingsActionItem(
                     title = "Permissions in use",
@@ -2178,7 +2232,6 @@ fun rememberSettingsItemsState(navBarNav: NavBarNav?, snackbarDisplay: SnackbarD
                     section = Section.Apps,
                     group = SettingsGroup.Permissions,
                     action = { nav.navigateTo(PebbleNavBarRoutes.PermissionUsageRoute) },
-                    show = { libPebbleConfig.watchConfig.enablePlugins },
                 ) },
                 basicSettingsActionItem(
                     title = "Sign Out - Pebble Account",
@@ -2304,6 +2357,24 @@ fun rememberSettingsItemsState(navBarNav: NavBarNav?, snackbarDisplay: SnackbarD
                     },
                     show = { libPebbleConfig.watchConfig.proactivelyDownloadAppUpdates },
                 ),
+                navBarNav?.let { nav -> basicSettingsActionItem(
+                    title = "Data usage",
+                    description = "How much your apps have sent and received",
+                    keywords = "network mobile cellular data bandwidth",
+                    topLevelType = TopLevelType.Phone,
+                    section = Section.Apps,
+                    group = SettingsGroup.AppUsage,
+                    action = { nav.navigateTo(PebbleNavBarRoutes.AppDataUsageRoute) },
+                ) },
+                navBarNav?.let { nav -> basicSettingsActionItem(
+                    title = "App activity",
+                    description = "What actions your apps took using plugins",
+                    keywords = "audit log actions history",
+                    topLevelType = TopLevelType.Phone,
+                    section = Section.Apps,
+                    group = SettingsGroup.AppUsage,
+                    action = { nav.navigateTo(PebbleNavBarRoutes.AppActivityRoute) },
+                ) },
                 navBarNav?.let { nav -> basicSettingsActionItem(
                     title = "Configure Appstore Sources",
                     topLevelType = TopLevelType.Phone,
@@ -3058,10 +3129,6 @@ fun <T> basicSettingsDropdownItem(
         )
     }
 )
-
-private const val SHOW_DEBUG_OPTIONS_SETTINGS_KEY = "showDebugOptions"
-
-fun Settings.showDebugOptions() = getBoolean(SHOW_DEBUG_OPTIONS_SETTINGS_KEY, false)
 
 @Composable
 fun PKJSCopyTokenDialog(onDismissRequest: () -> Unit) {

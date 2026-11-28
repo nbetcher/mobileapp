@@ -12,6 +12,8 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,7 +32,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.CutCornerShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -168,6 +172,7 @@ import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDeviceInRecovery
 import io.rebble.libpebblecommon.connection.ConnectingPebbleDevice
 import io.rebble.libpebblecommon.connection.ConnectionFailureReason
+import io.rebble.libpebblecommon.connection.PERIPHERAL_NOT_FOUND_MAX_ATTEMPTS
 import io.rebble.libpebblecommon.connection.DisconnectingPebbleDevice
 import io.rebble.libpebblecommon.connection.DiscoveredPebbleDevice
 import io.rebble.libpebblecommon.connection.FirmwareUpdateCheckResult
@@ -177,6 +182,7 @@ import io.rebble.libpebblecommon.connection.bt.BluetoothState
 import io.rebble.libpebblecommon.connection.bt.ble.pebble.ReversePpogVersion
 import io.rebble.libpebblecommon.connection.color
 import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdateErrorStarting
+import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdateTrigger
 import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdater
 import io.rebble.libpebblecommon.connection.endpointmanager.LanguagePackInstallState
 import io.rebble.libpebblecommon.connection.endpointmanager.installing
@@ -187,12 +193,14 @@ import io.rebble.libpebblecommon.services.blobdb.TimelineActionResult
 import io.rebble.libpebblecommon.timeline.TimelineColor
 import io.rebble.libpebblecommon.timeline.toPebbleColor
 import io.rebble.libpebblecommon.util.getTempFilePath
+import io.rebble.libpebblecommon.metadata.WatchColor
+import io.rebble.libpebblecommon.metadata.WatchType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -254,6 +262,7 @@ fun WatchesScreen(navBarNav: NavBarNav, topBarParams: TopBarParams) {
     var showIndexAlreadyPairedDialog by remember { mutableStateOf(false) }
     var fabInfoDialog by remember { mutableStateOf<FabInfo?>(null) }
     var showRingWakeHint by remember { mutableStateOf(false) }
+    var discoveryScan by remember { mutableStateOf<DiscoveryScan?>(null) }
     LaunchedEffect(scanningStatus) {
         showRingWakeHint = false
         if (scanningStatus == ScanningStatus.ScanningRing) {
@@ -293,6 +302,7 @@ fun WatchesScreen(navBarNav: NavBarNav, topBarParams: TopBarParams) {
     fun scan(uiContext: PlatformUiContext) {
         scope.launch {
             if (!ensureScanPermission(uiContext)) return@launch
+            discoveryScan = DiscoveryScan.Ble
             libPebble.startBleScan()
         }
     }
@@ -300,6 +310,7 @@ fun WatchesScreen(navBarNav: NavBarNav, topBarParams: TopBarParams) {
     fun scanClassic(uiContext: PlatformUiContext) {
         scope.launch {
             if (!ensureScanPermission(uiContext)) return@launch
+            discoveryScan = DiscoveryScan.Classic
             libPebble.startClassicScan()
         }
     }
@@ -449,7 +460,7 @@ fun WatchesScreen(navBarNav: NavBarNav, topBarParams: TopBarParams) {
             val entriesFlow = remember {
                 combine(watchesFlow, libIndex.rings) { sortedWatches, rings ->
                     rings.map { DeviceListEntry.Ring(it) } +
-                    sortedWatches.map { DeviceListEntry.Watch(it) }
+                    sortedWatches.filter { it !is DiscoveredPebbleDevice }.map { DeviceListEntry.Watch(it) }
                 }
             }
             val entries by entriesFlow.collectAsState(initial = emptyList())
@@ -509,42 +520,21 @@ fun WatchesScreen(navBarNav: NavBarNav, topBarParams: TopBarParams) {
                         )
                     }
                 }
-                if (scanningStatus != ScanningStatus.NotScanning && !ringPairing) {
+                if (scanningStatus == ScanningStatus.ScanningRing && !ringPairing) {
                     Text(
                         text = "Scanning for devices...",
                         modifier = Modifier.align(Alignment.CenterHorizontally).padding(5.dp)
                     )
-                    if (scanningStatus == ScanningStatus.ScanningRing) {
-                        Text(
-                            text = "Press the button on your Index 01 to wake it.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.align(Alignment.CenterHorizontally).padding(horizontal = 16.dp)
-                        )
-                    }
+                    Text(
+                        text = "Press the button on your Index 01 to wake it.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.align(Alignment.CenterHorizontally).padding(horizontal = 16.dp)
+                    )
                     CircularProgressIndicator(
                         modifier = Modifier.align(Alignment.CenterHorizontally).padding(5.dp)
                     )
-                    if (scanningStatus != ScanningStatus.ScanningRing) {
-                        ElevatedCard(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 8.dp),
-                            elevation = CardDefaults.cardElevation(
-                                defaultElevation = 6.dp
-                            ),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.errorContainer
-                            )
-                        ) {
-                            Text(
-                                text = "Remember to unpair any other phones from your watch before connecting (Settings/Bluetooth)",
-                                modifier = Modifier.padding(15.dp).align(Alignment.CenterHorizontally),
-                                textAlign = TextAlign.Center,
-                            )
-                        }
-                    }
-                    if (scanningStatus == ScanningStatus.ScanningRing && showRingWakeHint && rings.isEmpty()) {
+                    if (showRingWakeHint && rings.isEmpty()) {
                         ElevatedCard(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -619,6 +609,38 @@ fun WatchesScreen(navBarNav: NavBarNav, topBarParams: TopBarParams) {
                     }
                 }
             }
+            discoveryScan?.let { scanType ->
+                val uiContext = rememberUiContext()
+                fun close() {
+                    discoveryScan = null
+                    libPebble.stopBleScan()
+                    libPebble.stopClassicScan()
+                }
+                DiscoveredWatchesDialog(
+                    watches = watches.filterIsInstance<DiscoveredPebbleDevice>(),
+                    scanning = scanningStatus == ScanningStatus.ScanningWatchBle ||
+                            scanningStatus == ScanningStatus.ScanningWatchClassic,
+                    connectEnabled = bluetoothEnabled.enabled() && !showOtherPebbleAppsWarningAndPreventConnection,
+                    onConnect = { watch ->
+                        close()
+                        if (uiContext != null) {
+                            scope.launch {
+                                companionDevice.registerDevice(watch.identifier, uiContext)
+                                watch.connect()
+                            }
+                        }
+                    },
+                    onScanAgain = {
+                        if (uiContext != null) {
+                            when (scanType) {
+                                DiscoveryScan.Ble -> scan(uiContext)
+                                DiscoveryScan.Classic -> scanClassic(uiContext)
+                            }
+                        }
+                    },
+                    onDismiss = ::close,
+                )
+            }
         }
     }
 
@@ -676,6 +698,69 @@ fun WatchesScreen(navBarNav: NavBarNav, topBarParams: TopBarParams) {
             Text(info.body)
         }
     }
+}
+
+private enum class DiscoveryScan { Ble, Classic }
+
+@Composable
+private fun DiscoveredWatchesDialog(
+    watches: List<DiscoveredPebbleDevice>,
+    scanning: Boolean,
+    connectEnabled: Boolean,
+    onConnect: (DiscoveredPebbleDevice) -> Unit,
+    onScanAgain: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add Watch") },
+        text = {
+            Column {
+                Text(
+                    "Remember to unpair any other phones from your watch before connecting (Settings/Bluetooth)",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(16.dp))
+                if (scanning) {
+                    CoreLinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                } else if (watches.isEmpty()) {
+                    Text("No watches found", modifier = Modifier.padding(vertical = 16.dp))
+                }
+                LazyColumn {
+                    items(watches, key = { it.identifier.asString }) { watch ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = connectEnabled) { onConnect(watch) }
+                                .padding(vertical = 12.dp),
+                        ) {
+                            WatchColorIndicator(watch.color())
+                            Spacer(Modifier.width(16.dp))
+                            Column {
+                                Text(watch.displayName(), style = MaterialTheme.typography.bodyLarge)
+                                watch.color()?.let {
+                                    Text(
+                                        it.uiDescription,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            if (!scanning) {
+                TextButton(onClick = onScanAgain) { Text("Scan again") }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
 }
 
 private enum class FabInfo(val title: String, val body: String) {
@@ -1226,7 +1311,11 @@ fun PebbleDevice.stateText(
             is LanguagePackInstallState.Idle -> ""
             is LanguagePackInstallState.Downloading -> " - downloading language pack: ${languagePackInstallState.language}"
         }
-        is FirmwareUpdater.FirmwareUpdateStatus.WaitingForReboot -> " - Rebooting watch to finish update to ${firmwareUpdateState.update.version.stringVersion}"
+        is FirmwareUpdater.FirmwareUpdateStatus.WaitingForReboot -> if (firmwareUpdateState.viaPrf) {
+            " - Rebooting watch into recovery to install ${firmwareUpdateState.update.version.stringVersion}"
+        } else {
+            " - Rebooting watch to finish update to ${firmwareUpdateState.update.version.stringVersion}"
+        }
         is FirmwareUpdater.FirmwareUpdateStatus.WaitingToStart -> " - Updating to PebbleOS ${firmwareUpdateState.update.version.stringVersion}"
     }
     val reversePpogState = when {
@@ -1238,12 +1327,12 @@ fun PebbleDevice.stateText(
         is ConnectedPebbleDevice -> "Connected$reversePpogState$installingState"
         is ConnectedPebbleDeviceInRecovery -> "Connected (Factory)$reversePpogState$installingState"
         is ConnectingPebbleDevice -> {
+            val reboot = rebootingForFirmwareUpdate
             val connectingState =
                 when {
-                rebootingAfterFirmwareUpdate -> if (negotiating) {
-                    "Rebooting after update - Negotiating"
-                } else {
-                    "Rebooting after update - Waiting"
+                reboot != null -> {
+                    val rebooting = if (reboot.viaPrf) "Rebooting into recovery to update" else "Rebooting after update"
+                    "$rebooting - ${if (negotiating) "Negotiating" else "Waiting"}"
                 }
 
                 negotiating -> "Negotiating"
@@ -1494,6 +1583,16 @@ fun WatchMenu(watch: PebbleDevice, navBarNav: NavBarNav) {
                         }
                     }
                 )
+
+                val error by watch.devConnectionError.collectAsState()
+                if (!active && error != null) {
+                    Text(
+                        text = "Dev connection failed: $error",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+                    )
+                }
 
                 if (active) {
                     if (config.watchConfig.lanDevConnection) {
@@ -1769,10 +1868,15 @@ data class TestNotificationContent(
     val color: TimelineColor? = TimelineColor.Orange,
 )
 
+@Composable
 fun ConnectedPebbleDevice.languagePackInstalled(repository: LanguagePackRepository): String? {
+    val manifest by repository.manifest.collectAsState()
     val languagePackInstalledAtConnectionTime = installedLanguagePack
+    val installedName = remember(languagePackInstalledAtConnectionTime, manifest) {
+        languagePackInstalledAtConnectionTime?.let { repository.displayNameForInstalled(it) }
+    }
     val languagePackRecentlyInstalledSinceConnection = (languagePackInstallState as? LanguagePackInstallState.Idle)?.activeLanguage
-    return languagePackRecentlyInstalledSinceConnection ?: languagePackInstalledAtConnectionTime?.let { repository.displayNameForInstalled(it) }
+    return languagePackRecentlyInstalledSinceConnection ?: installedName
 }
 
 private const val CUSTOM_NOTIFICATION_CONTENT_KEY = "custom_notification_content"
@@ -1974,6 +2078,23 @@ fun ScreenshotDialog(watch: ConnectedPebble.Screenshot, onDismissRequest: () -> 
 
 
 @Composable
+private fun WatchColorIndicator(color: WatchColor?) {
+    val round = color?.platform == WatchType.CHALK || color?.platform == WatchType.GABBRO
+    val shape = if (round) CircleShape else RoundedCornerShape(6.dp)
+    val modifier = if (round) Modifier.size(16.dp) else Modifier.size(width = 13.dp, height = 17.dp)
+    val accent = color?.accentColor
+    Box(
+        modifier
+            .background(color?.color ?: MaterialTheme.colorScheme.surfaceVariant, shape)
+            .border(
+                if (accent != null) 2.5.dp else 1.dp,
+                accent ?: MaterialTheme.colorScheme.outline,
+                shape,
+            )
+    )
+}
+
+@Composable
 fun WatchHeader(watch: PebbleDevice) {
     Row {
         Text(
@@ -2008,7 +2129,9 @@ fun WatchDetails(
     val firmwareUpdateInProgress =
         firmwareUpdateState !is FirmwareUpdater.FirmwareUpdateStatus.NotInProgress
     val languagePackInstallState = (watch as? ConnectedPebble.LanguageState)?.languagePackInstallState ?: LanguagePackInstallState.Idle()
-    Row {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        WatchColorIndicator(watch.color())
+        Spacer(Modifier.width(8.dp))
         Text(
             text = watch.stateText(firmwareUpdateState, languagePackInstallState, coreConfig),
             fontWeight = when {
@@ -2104,14 +2227,14 @@ fun WatchDetails(
                 confirmButton = {
                     TextButton(onClick = {
                         showFirmwareUpdateConfirmDialog = false
-                        firmwareUpdater.updateFirmware(firmwareUpdateAvailable)
+                        firmwareUpdater.updateFirmware(firmwareUpdateAvailable, FirmwareUpdateTrigger.Ui)
                     }) { Text("Install") }
                 },
                 dismissButton = { TextButton(onClick = { showFirmwareUpdateConfirmDialog = false }) { Text("Cancel") } }
             )
         }
         PebbleElevatedButton(
-            text = "Update PebbleOS to ${firmwareUpdateAvailable.version.stringVersion}",
+            text = "Update PebbleOS",
             onClick = {
                 logger.d { "Starting firmware update from watches screen" }
                 showFirmwareUpdateConfirmDialog = true
@@ -2139,6 +2262,30 @@ fun WatchDetails(
             )
         }
     }
+    var companionApproved by remember(watch) { mutableStateOf(companionDevice.hasApprovedDevice(watch.identifier)) }
+    if (watch is KnownPebbleDevice && !companionApproved && !coreConfig.disableCompanionDeviceManager) {
+        val uiContext = rememberUiContext()
+        PebbleElevatedButton(
+            text = "Enable background access",
+            onClick = {
+                if (uiContext == null) return@PebbleElevatedButton
+                scope.launch {
+                    // CDM can only find the watch while it's advertising, i.e. not connected
+                    val wasActive = watch is ActiveDevice
+                    if (watch is ActiveDevice) watch.disconnect()
+                    try {
+                        companionDevice.registerDevice(watch.identifier, uiContext)
+                    } finally {
+                        if (wasActive) watch.connect()
+                    }
+                    companionApproved = companionDevice.hasApprovedDevice(watch.identifier)
+                }
+            },
+            enabled = bluetoothState.enabled(),
+            primaryColor = true,
+            modifier = Modifier.padding(vertical = 5.dp),
+        )
+    }
     val failureInfo = watch.connectionFailureInfo
     if (watch !is CommonConnectedDevice && failureInfo?.reason == ConnectionFailureReason.CreateBondFailed) {
         ConnectionFailureGuidanceButton(
@@ -2159,6 +2306,16 @@ fun WatchDetails(
                     "If it still won't connect, open Bluetooth settings, " +
                     "remove (\"Forget\") this watch, and also unpair the phone " +
                     "in watch settings (Settings > Bluetooth), then accept the new pairing request.",
+        )
+    }
+    if (watch !is CommonConnectedDevice && failureInfo?.reason == ConnectionFailureReason.PeripheralNotFound && failureInfo.times >= PERIPHERAL_NOT_FOUND_MAX_ATTEMPTS) {
+        ConnectionFailureGuidanceButton(
+            appContext = appContext,
+            pebbleFeatures = pebbleFeatures,
+            buttonText = "Can't find watch",
+            dialogTitle = "Can't find watch",
+            dialogText = "Your phone can't find this watch. Forget it in this app, remove (\"Forget\") it " +
+                    "in your phone's Bluetooth settings, then pair it again.",
         )
     }
     if (watch !is CommonConnectedDevice && failureInfo?.reason == ConnectionFailureReason.MalformedConnectivityStatus) {

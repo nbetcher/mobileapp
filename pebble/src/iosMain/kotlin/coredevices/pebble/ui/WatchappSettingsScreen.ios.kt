@@ -36,7 +36,7 @@ import kotlin.uuid.Uuid
 internal actual fun webViewFactory(
     params: WebViewFactoryParam,
     uuid: Uuid,
-    bridge: ConfigPageBridge?,
+    bridge: ConfigPageBridge,
     mayLoad: (String) -> Boolean,
     network: ConfigPageNetwork,
 ): NativeWebView =
@@ -50,22 +50,20 @@ internal actual fun webViewFactory(
                 forMainFrameOnly = false,
             )
         )
-        if (bridge != null) {
-            // Installed before the page parses, so a page's own <script> can call Pebble.* at the
-            // top level rather than waiting for something to be injected after load.
-            configuration.userContentController.addUserScript(
-                WKUserScript(
-                    source = CONFIG_PAGE_SHIM_JS,
-                    injectionTime = WKUserScriptInjectionTime.WKUserScriptInjectionTimeAtDocumentStart,
-                    forMainFrameOnly = true,
-                )
+        // Installed before the page parses, so a page's own <script> can call Pebble.* at the
+        // top level rather than waiting for something to be injected after load.
+        configuration.userContentController.addUserScript(
+            WKUserScript(
+                source = CONFIG_PAGE_SHIM_JS,
+                injectionTime = WKUserScriptInjectionTime.WKUserScriptInjectionTimeAtDocumentStart,
+                forMainFrameOnly = true,
             )
-            configuration.userContentController.addScriptMessageHandler(
-                NativeConfigBridge(bridge),
-                CONFIG_NATIVE_NAMESPACE,
-            )
-            bridge.attach { js -> evaluateJavaScript(js, null) }
-        }
+        )
+        configuration.userContentController.addScriptMessageHandler(
+            NativeConfigBridge(bridge),
+            CONFIG_NATIVE_NAMESPACE,
+        )
+        bridge.attach { js -> evaluateJavaScript(js, null) }
         if (available(OS.Ios to OSVersion(17))) {
             configuration.websiteDataStore =
                 WKWebsiteDataStore.dataStoreForIdentifier(NSUUID("$uuid"))
@@ -84,12 +82,11 @@ internal actual fun webViewFactory(
             UIScrollViewContentInsetAdjustmentBehavior.UIScrollViewContentInsetAdjustmentNever
     }
 
-internal actual class ConfigPageNetwork(val rules: WKContentRuleList?)
+internal actual class ConfigPageNetwork(val rules: WKContentRuleList?, actual val enforced: Boolean = true)
 
 /**
  * WKWebView can't intercept http(s), so the page gets a content blocker: every http(s) and ws(s)
- * load is blocked except to the granted domains. Null rules if it can't be compiled, which
- * leaves the page unrestricted.
+ * load is blocked except to the granted domains.
  */
 internal actual suspend fun configPageNetwork(uuid: Uuid, domains: List<String>?): ConfigPageNetwork {
     val granted = domains ?: return ConfigPageNetwork(null)
@@ -97,18 +94,18 @@ internal actual suspend fun configPageNetwork(uuid: Uuid, domains: List<String>?
         listOf("^https?://", "^wss?://").forEach { scheme ->
             add(rule(scheme, "block"))
             granted.forEach { domain ->
-                add(rule("$scheme([^/:]+\\.)?${domain.replace(".", "\\.")}[:/]", "ignore-previous-rules"))
+                add(rule(configPageUrlFilter(scheme, domain), "ignore-previous-rules"))
             }
         }
     }
-    val store = WKContentRuleListStore.defaultStore() ?: return ConfigPageNetwork(null)
+    val store = WKContentRuleListStore.defaultStore() ?: return ConfigPageNetwork(null, enforced = false)
     val list = suspendCoroutine { cont ->
         store.compileContentRuleListForIdentifier("config-$uuid", rules.toString()) { list, error ->
             if (error != null) Logger.withTag("configPageNetwork").w { "Couldn't compile rules: ${error.localizedDescription}" }
             cont.resume(list)
         }
     }
-    return ConfigPageNetwork(list)
+    return ConfigPageNetwork(list, enforced = list != null)
 }
 
 private fun rule(urlFilter: String, action: String) = buildJsonObject {

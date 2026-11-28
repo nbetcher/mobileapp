@@ -3,7 +3,10 @@ package io.rebble.libpebblecommon.web
 import co.touchlab.kermit.Logger
 import io.rebble.libpebblecommon.connection.FirmwareUpdateCheckResult
 import io.rebble.libpebblecommon.connection.FirmwareUpdateCheckState
+import io.rebble.libpebblecommon.connection.PebbleIdentifier
 import io.rebble.libpebblecommon.connection.WebServices
+import io.rebble.libpebblecommon.connection.endpointmanager.PendingFirmwareInstalls
+import io.rebble.libpebblecommon.connection.endpointmanager.installsDirectly
 import io.rebble.libpebblecommon.di.ConnectionCoroutineScope
 import io.rebble.libpebblecommon.services.WatchInfo
 import kotlinx.coroutines.delay
@@ -26,6 +29,8 @@ class RealFirmwareUpdateManager(
     private val webServices: WebServices,
     private val connectionCoroutineScope: ConnectionCoroutineScope,
     private val clock: Clock,
+    private val identifier: PebbleIdentifier,
+    private val pendingInstalls: PendingFirmwareInstalls,
 ) : FirmwareUpdateManager {
     private val _availableUpdates = MutableStateFlow<FirmwareUpdateCheckState>(
         FirmwareUpdateCheckState(checkingForUpdates = false, result = null)
@@ -64,7 +69,12 @@ class RealFirmwareUpdateManager(
         }
         logger.d { "doUpdateCheck" }
         _availableUpdates.value = _availableUpdates.value.copy(checkingForUpdates = true)
-        val firmwareUpdateAvailable = webServices.checkForFirmwareUpdate(watch, force)
+        val firmwareUpdateAvailable = when (val result = webServices.checkForFirmwareUpdate(watch, force)) {
+            is FirmwareUpdateCheckResult.FoundUpdate -> result.copy(
+                installsDirectly = installsDirectly(watch.runningFwVersion, result.version, pendingInstalls.get(identifier)),
+            )
+            else -> result
+        }
         logger.d { "firmwareUpdateAvailable = $firmwareUpdateAvailable" }
         val checkedAt = when (firmwareUpdateAvailable) {
             is FirmwareUpdateCheckResult.UpdateCheckFailed -> _availableUpdates.value.checkedAt

@@ -15,12 +15,14 @@ import io.rebble.libpebblecommon.calendar.NewCalendarEvent
 import io.rebble.libpebblecommon.calls.Call
 import io.rebble.libpebblecommon.connection.bt.BluetoothState
 import io.rebble.libpebblecommon.connection.bt.ble.pebble.ReversePpogVersion
+import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdateTrigger
 import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdater
 import io.rebble.libpebblecommon.connection.endpointmanager.InstalledLanguagePack
 import io.rebble.libpebblecommon.connection.endpointmanager.LanguagePackInstallState
 import io.rebble.libpebblecommon.connection.endpointmanager.WatchLanguagePack
 import io.rebble.libpebblecommon.connection.endpointmanager.musiccontrol.MusicTrack
 import io.rebble.libpebblecommon.connection.endpointmanager.timeline.CustomTimelineActionHandler
+import io.rebble.libpebblecommon.connection.endpointmanager.timeline.InternalActionHandler
 import io.rebble.libpebblecommon.database.asMillisecond
 import io.rebble.libpebblecommon.database.dao.AppWithCount
 import io.rebble.libpebblecommon.database.dao.ChannelAndCount
@@ -28,6 +30,7 @@ import io.rebble.libpebblecommon.database.dao.ContactWithCount
 import io.rebble.libpebblecommon.database.dao.DailyMovementAggregate
 import io.rebble.libpebblecommon.database.dao.HealthAggregates
 import io.rebble.libpebblecommon.database.dao.WatchPreference
+import io.rebble.libpebblecommon.database.entity.AppDataUsageEntity
 import io.rebble.libpebblecommon.database.entity.CalendarEntity
 import io.rebble.libpebblecommon.database.entity.ChannelGroup
 import io.rebble.libpebblecommon.database.entity.ChannelItem
@@ -39,8 +42,10 @@ import io.rebble.libpebblecommon.database.entity.NotificationAppItem
 import io.rebble.libpebblecommon.database.entity.NotificationEntity
 import io.rebble.libpebblecommon.database.entity.NotificationRuleEntity
 import io.rebble.libpebblecommon.database.entity.OverlayDataEntity
+import io.rebble.libpebblecommon.database.entity.PluginActionLogEntity
 import io.rebble.libpebblecommon.database.entity.TimelineNotification
 import io.rebble.libpebblecommon.database.entity.TimelinePin
+import io.rebble.libpebblecommon.database.entity.TimelineReminder
 import io.rebble.libpebblecommon.database.entity.WatchPref
 import io.rebble.libpebblecommon.database.entity.WeatherAppEntry
 import io.rebble.libpebblecommon.database.entity.LockerAppPermission
@@ -218,6 +223,10 @@ class FakeLibPebble : LibPebble {
     }
 
     override fun appPermissionStatuses(id: Uuid?): Flow<List<AppPermissionStatus>?> = flowOf(emptyList())
+
+    override fun appDataUsage(days: Int): Flow<List<AppDataUsageEntity>> = flowOf(emptyList())
+
+    override fun pluginActionLog(targetUuid: Uuid?, callerUuid: Uuid?): Flow<List<PluginActionLogEntity>> = flowOf(emptyList())
 
     override fun getLockerApp(id: Uuid): Flow<LockerWrapper?> {
         return flow { emit(fakeLockerEntries.first()) }
@@ -483,6 +492,15 @@ class FakeLibPebble : LibPebble {
     override fun delete(pinUuid: Uuid) {
     }
 
+    override suspend fun insertOrReplace(reminder: TimelineReminder) {
+    }
+
+    override suspend fun deleteReminder(reminderUuid: Uuid) {
+    }
+
+    override fun setActionHandler(internalType: String, handler: InternalActionHandler) {
+    }
+
     override fun vibePatterns(): Flow<List<VibePattern>> {
         return flow {
             emit(
@@ -529,6 +547,9 @@ class FakeLibPebble : LibPebble {
     override val currentWeather: Flow<List<WeatherAppEntry>> = flowOf(emptyList())
 
     override fun registerPlugin(plugin: NativePlugin) {
+    }
+
+    override fun unregisterPlugin(pluginUuid: Uuid) {
     }
 
     override val disabledBuiltInPlugins: StateFlow<Set<Uuid>> = MutableStateFlow(emptySet())
@@ -578,6 +599,7 @@ class FakeLibPebble : LibPebble {
         item: String,
         properties: List<String>?,
         iconPixelSize: IconPixelSize?,
+        limit: Int?,
     ): Flow<SourceUpdate> = emptyFlow()
 
     override suspend fun read(
@@ -651,8 +673,9 @@ fun fakeWatch(connected: Boolean = Random.nextBoolean()): PebbleDevice {
                 )!!,
                 url = "",
                 notes = "v4.9.9-core1 is great",
+                installsDirectly = true,
             )
-            FirmwareUpdater.FirmwareUpdateStatus.InProgress(fakeUpdate, MutableStateFlow(0.47f))
+            FirmwareUpdater.FirmwareUpdateStatus.InProgress(fakeUpdate, MutableStateFlow(0.47f), FirmwareUpdateTrigger.Ui)
         } else {
             FirmwareUpdater.FirmwareUpdateStatus.NotInProgress.Idle()
         }
@@ -668,6 +691,7 @@ fun fakeWatch(connected: Boolean = Random.nextBoolean()): PebbleDevice {
                 )!!,
                 url = "http://something",
                 notes = "update!!",
+                installsDirectly = true,
             )
         } else {
             null
@@ -751,9 +775,9 @@ class FakeConnectedDevice(
     override val inboundMessages: Flow<PebblePacket> = MutableSharedFlow()
     override val rawInboundMessages: Flow<ByteArray> = MutableSharedFlow()
 
-    override fun sideloadFirmware(path: Path) {}
+    override fun sideloadFirmware(path: Path, trigger: FirmwareUpdateTrigger) {}
 
-    override fun updateFirmware(update: FirmwareUpdateCheckResult.FoundUpdate) {}
+    override fun updateFirmware(update: FirmwareUpdateCheckResult.FoundUpdate, trigger: FirmwareUpdateTrigger) {}
 
     override fun checkforFirmwareUpdate(force: Boolean) {}
 
@@ -842,6 +866,7 @@ class FakeConnectedDevice(
     override suspend fun startDevConnection(forceLan: Boolean) {}
     override suspend fun stopDevConnection() {}
     override val devConnectionActive: StateFlow<Boolean> = MutableStateFlow(false)
+    override val devConnectionError: StateFlow<String?> = MutableStateFlow(null)
     override val batteryLevel: Int? = 50
     override suspend fun takeScreenshot(): ImageBitmap {
         // Return an orange square as a placeholder
@@ -902,9 +927,9 @@ class FakeConnectedDeviceInRecovery(
     override fun disconnect() {}
     override val reversePpogVersion: ReversePpogVersion? = null
 
-    override fun sideloadFirmware(path: Path) {}
+    override fun sideloadFirmware(path: Path, trigger: FirmwareUpdateTrigger) {}
 
-    override fun updateFirmware(update: FirmwareUpdateCheckResult.FoundUpdate) {}
+    override fun updateFirmware(update: FirmwareUpdateCheckResult.FoundUpdate, trigger: FirmwareUpdateTrigger) {}
 
     override fun checkforFirmwareUpdate(force: Boolean) {}
 
@@ -944,6 +969,7 @@ class FakeConnectedDeviceInRecovery(
     override suspend fun startDevConnection(forceLan: Boolean) {}
     override suspend fun stopDevConnection() {}
     override val devConnectionActive: StateFlow<Boolean> = MutableStateFlow(false)
+    override val devConnectionError: StateFlow<String?> = MutableStateFlow(null)
     override val batteryLevel: Int? = 50
 
     override suspend fun gatherLogs(): Path? {

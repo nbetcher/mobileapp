@@ -178,15 +178,15 @@ internal val WATCH_PREF_LAYOUT: List<PrefLayout> = listOf(
     PrefLayout(QuicklaunchWatchPref.QlSingleClickDown, Section.QuickLaunch),
 
     PrefLayout(EnumWatchPref.SystemTextSize, Section.Display),
-    PrefLayout(BoolWatchPref.Backlight, Section.Display, SettingsGroup.Backlight, "Enabled"),
+    PrefLayout(BoolWatchPref.Backlight, Section.Display, SettingsGroup.Backlight, "Enable"),
     PrefLayout(EnumWatchPref.BacklightPreset, Section.Display, SettingsGroup.Backlight, "Preset"),
     PrefLayout(EnumWatchPref.BacklightIntensity, Section.Display, SettingsGroup.Backlight, "Intensity"),
     PrefLayout(EnumWatchPref.DynamicBacklightMode, Section.Display, SettingsGroup.Backlight),
     PrefLayout(EnumWatchPref.BacklightTouch, Section.Display, SettingsGroup.Backlight),
     PrefLayout(NumberWatchPref.BacklightTimeoutMs, Section.Display, SettingsGroup.Backlight, "Timeout"),
-    PrefLayout(BoolWatchPref.AmbientLightSensor, Section.Display, SettingsGroup.BacklightAmbient, "Enabled"),
+    PrefLayout(BoolWatchPref.AmbientLightSensor, Section.Display, SettingsGroup.BacklightAmbient, "Enable"),
     PrefLayout(NumberWatchPref.AmbientLightThreshold, Section.Display, SettingsGroup.BacklightAmbient, "Threshold"),
-    PrefLayout(BoolWatchPref.BacklightMotion, Section.Display, SettingsGroup.BacklightMotion, "Enabled"),
+    PrefLayout(BoolWatchPref.BacklightMotion, Section.Display, SettingsGroup.BacklightMotion, "Enable"),
     PrefLayout(EnumWatchPref.MotionSensitivity, Section.Display, SettingsGroup.BacklightMotion, "Sensitivity"),
     PrefLayout(RgbColorWatchPref.BacklightColor, Section.Display, SettingsGroup.BacklightColor, "Color"),
     PrefLayout(BoolWatchPref.BacklightColorDayNightEnabled, Section.Display, SettingsGroup.BacklightColor, "Change Color at Night"),
@@ -197,6 +197,7 @@ internal val WATCH_PREF_LAYOUT: List<PrefLayout> = listOf(
     PrefLayout(EnumWatchPref.MenuScrollVibe, Section.Display, SettingsGroup.MenuScrolling, "Vibration"),
     PrefLayout(BoolWatchPref.LeftHandedMode, Section.Display),
 
+    PrefLayout(EnumWatchPref.Temperature, Section.Weather),
     PrefLayout(EnumWatchPref.WindSpeed, Section.Weather),
 
     PrefLayout(EnumWatchPref.LegacyVibeIntensity, Section.Notifications, SettingsGroup.Vibration, "System Intensity"),
@@ -206,6 +207,7 @@ internal val WATCH_PREF_LAYOUT: List<PrefLayout> = listOf(
     PrefLayout(BoolWatchPref.NotificationVibeDelay, Section.Notifications, SettingsGroup.Vibration, "Delay Until Notification Is Visible"),
     PrefLayout(BoolWatchPref.NotificationBacklight, Section.Notifications),
     PrefLayout(BoolWatchPref.RespectPhoneSilence, Section.Notifications),
+    PrefLayout(BoolWatchPref.NotificationDismissalSync, Section.Notifications),
     PrefLayout(EnumWatchPref.NotificationTextSize, Section.Notifications),
     PrefLayout(EnumWatchPref.NotificationFilter, Section.Notifications),
     PrefLayout(NumberWatchPref.NotificationTimeoutMs, Section.Notifications),
@@ -252,7 +254,7 @@ internal fun List<WatchPreference<*>>.inLayoutOrder(): List<WatchPreference<*>> 
 
 fun WatchPref<*>.topLevelType(): TopLevelType = when (this) {
     // Weather is configured on the phone, even though the unit it sets is a watch pref.
-    EnumWatchPref.WindSpeed -> TopLevelType.Phone
+    EnumWatchPref.WindSpeed, EnumWatchPref.Temperature -> TopLevelType.Phone
     else -> TopLevelType.Watch
 }
 

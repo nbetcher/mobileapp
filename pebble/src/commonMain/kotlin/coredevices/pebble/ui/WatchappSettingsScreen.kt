@@ -4,18 +4,27 @@ import CoreNav
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -28,10 +37,21 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import co.touchlab.kermit.Logger
 import com.multiplatform.webview.request.RequestInterceptor
 import com.multiplatform.webview.request.WebRequest
@@ -46,11 +66,14 @@ import com.multiplatform.webview.web.rememberWebViewNavigator
 import com.multiplatform.webview.web.rememberWebViewState
 import coreapp.util.generated.resources.Res
 import coreapp.util.generated.resources.back
+import coredevices.pebble.PebbleDeepLinkHandler
+import coredevices.pebble.RealPebbleDeepLinkHandler
 import coredevices.pebble.config.ConfigPageBridge
 import coredevices.pebble.config.ConfigPageClosedListener
 import coredevices.pebble.config.ConfigPageSessions
 import coredevices.pebble.config.ConfigScriptIds
 import coredevices.pebble.config.PluginConfigFileAccess
+import coredevices.pebble.config.VisibleConfigPage
 import coredevices.pebble.config.performWebSignIn
 import coredevices.pebble.config.webSignInSupported
 import coredevices.util.isDebugBuild
@@ -60,11 +83,14 @@ import io.ktor.http.Url
 import io.ktor.http.decodeURLPart
 import io.rebble.libpebblecommon.connection.AppContext
 import io.rebble.libpebblecommon.connection.LibPebble
+import io.rebble.libpebblecommon.permissions.PermissionStatus
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -87,15 +113,24 @@ internal object WatchappSettingsUrlCache {
 internal expect fun webViewFactory(
     params: WebViewFactoryParam,
     uuid: Uuid,
-    /** Null leaves the page with no `Pebble` object, which is what a plain webview should be. */
-    bridge: ConfigPageBridge?,
+    bridge: ConfigPageBridge,
     /** Blocking; whatever the page loads or connects to is checked against the app's permissions. */
     mayLoad: (String) -> Boolean,
     network: ConfigPageNetwork,
 ): NativeWebView
 
 /** Limits what a config page may connect to, on top of [webViewFactory]'s per-request checks. */
-internal expect class ConfigPageNetwork
+internal expect class ConfigPageNetwork {
+    /** False if the limits couldn't be put in place, so the page mustn't open. */
+    val enforced: Boolean
+}
+
+/**
+ * WebKit content-blocker url-filters allowing [domain] and its subdomains for [scheme] (e.g.
+ * `^https?://`). The host must end at a port or path, so `https://domain:x@evil.com/` doesn't match.
+ */
+internal fun configPageUrlFilter(scheme: String, domain: String) =
+    "$scheme([^/:@]+\\.)?${domain.replace(".", "\\.")}(:[0-9]+)?/"
 
 /** [domains] each cover their subdomains; null leaves the page unrestricted. */
 internal expect suspend fun configPageNetwork(uuid: Uuid, domains: List<String>?): ConfigPageNetwork
@@ -155,8 +190,23 @@ fun WatchappSettingsScreen(
             androidWebSettings.domStorageEnabled = true
             iOSWebSettings.isInspectable = true
         }
+        val deepLinks: PebbleDeepLinkHandler = koinInject()
+        val scope = rememberCoroutineScope()
+        // Leaves the page for the linked app's page in the locker. Called on the main thread, which
+        // persistLocalStorage blocks on.
+        val openStoreAppLink = { url: String ->
+            val isStoreLink = RealPebbleDeepLinkHandler.storeAppLink(url) != null
+            if (isStoreLink) {
+                scope.launch(Dispatchers.Default) {
+                    runCatching { state.nativeWebView }.getOrNull()?.let { persistLocalStorage(it) }
+                    deepLinks.openStoreAppLink(url)
+                }
+            }
+            isStoreLink
+        }
         val interceptor = remember {
             SettingsRequestInterceptor(
+                openStoreAppLink = openStoreAppLink,
                 onSuccess = { data ->
                     runCatching { state.nativeWebView }.getOrNull()?.let { persistLocalStorage(it) }
                     session?.onPageClosed(data)
@@ -173,10 +223,9 @@ fun WatchappSettingsScreen(
             )
         }
         val navigator = rememberWebViewNavigator(requestInterceptor = interceptor)
-        val scope = rememberCoroutineScope()
         // One bridge for the life of the screen: it is installed when the WebView is built,
         // before any page has loaded, and picks up scripts as they resolve.
-        val bridge = remember { if (sessions.enabled) ConfigPageBridge(scope) else null }
+        val bridge = remember { ConfigPageBridge(scope) }
         val uiContext = rememberUiContext()
         val appContext: AppContext = koinInject()
         val debugBuild = remember { appContext.isDebugBuild() }
@@ -186,7 +235,7 @@ fun WatchappSettingsScreen(
         LaunchedEffect(bridge, webSignInApp, uiContext, debugBuild) {
             val ctx = uiContext
             // Only offer web sign-in where the platform can isolate its cookie jar.
-            bridge?.webSignIn = if (ctx != null && webSignInSupported() &&
+            bridge.webSignIn = if (ctx != null && webSignInSupported() &&
                 webSignInApp?.mayUseWebSignIn(debugBuild) == true) {
                 { request -> performWebSignIn(ctx, request) }
             } else {
@@ -195,9 +244,11 @@ fun WatchappSettingsScreen(
         }
         var linkRequest by remember { mutableStateOf<LinkRequest?>(null) }
         LaunchedEffect(bridge) {
-            bridge?.openUrl = { url ->
-                // One at a time, so a page can't swap the url while the user is reading it.
-                if (linkRequest != null) {
+            bridge.openUrl = { url ->
+                if (openStoreAppLink(url)) {
+                    true
+                } else if (linkRequest != null) {
+                    // One at a time, so a page can't swap the url while the user is reading it.
                     false
                 } else {
                     val answer = CompletableDeferred<Boolean>()
@@ -236,7 +287,7 @@ fun WatchappSettingsScreen(
             val ctx = uiContext
             val pluginUuid = webViewUuid
             // Only a plugin can use a granted file, so a page with none behind it gets no picker.
-            bridge?.fileAccess = if (ctx != null && pluginUuid != null &&
+            bridge.fileAccess = if (ctx != null && pluginUuid != null &&
                 session?.scripts?.containsKey(ConfigScriptIds.PLUGIN) == true) {
                 PluginConfigFileAccess(libPebble, pluginUuid, ctx)
             } else {
@@ -245,18 +296,52 @@ fun WatchappSettingsScreen(
         }
         DisposableEffect(session) {
             val open = session
-            bridge?.scripts = open?.scripts.orEmpty()
+            bridge.scripts = open?.scripts.orEmpty()
             // Starting a plugin takes a moment; the page waits for its 'ready' event.
-            val starting = scope.launch { open?.open { target -> bridge?.ready(target) } }
+            val starting = scope.launch { open?.open { target -> bridge.ready(target) } }
             onDispose {
                 starting.cancel()
-                open?.scripts?.keys?.forEach { bridge?.forget(it) }
-                bridge?.scripts = emptyMap()
+                open?.scripts?.keys?.forEach { bridge.forget(it) }
+                bridge.scripts = emptyMap()
                 scope.launch { open?.close() }
             }
         }
         LaunchedEffect(session) {
-            session?.messages?.collect { (target, json) -> bridge?.push(target, json) }
+            session?.messages?.collect { (target, json) -> bridge.push(target, json) }
+        }
+        val visibleConfigPage: VisibleConfigPage = koinInject()
+        if (webViewUuid != null) {
+            LifecycleResumeEffect(webViewUuid) {
+                visibleConfigPage.shown(webViewUuid)
+                onPauseOrDispose { visibleConfigPage.hidden(webViewUuid) }
+            }
+        }
+        var showPermissions by remember { mutableStateOf(false) }
+        val snackbarHostState = remember { SnackbarHostState() }
+        val definedPermissions by rememberUpdatedState(rememberPluginPermissions())
+        // Only what the app asks for while the page is open, as a notification would; anything already
+        // waiting has the badge. From the statuses, which don't wait for a plugin's config session to start running.
+        LaunchedEffect(webViewUuid) {
+            val appUuid = webViewUuid ?: return@LaunchedEffect
+            var known: Set<String>? = null
+            libPebble.appPermissionStatuses(appUuid)
+                .filterNotNull()
+                .map { all -> all.filter { it.status == PermissionStatus.Waiting && it.askedAtMs != null }.map { it.permission } }
+                .collect { keys ->
+                    val new = known?.let { keys - it }.orEmpty()
+                    known = keys.toSet()
+                    // In the background the notifier tells the user instead.
+                    if (new.isEmpty() || visibleConfigPage.app.value != appUuid) return@collect
+                    // Launched: showing waits until it's dismissed.
+                    launch {
+                        val result = snackbarHostState.showSnackbar(
+                            message = "$title wants to ${requestSummary(new, definedPermissions)}",
+                            actionLabel = "Review",
+                            duration = SnackbarDuration.Long,
+                        )
+                        if (result == SnackbarResult.ActionPerformed) showPermissions = true
+                    }
+                }
         }
         LaunchedEffect(state.loadingState) {
             if (state.loadingState is LoadingState.Loading) {
@@ -267,6 +352,7 @@ fun WatchappSettingsScreen(
         }
 
         Scaffold(
+            snackbarHost = { SnackbarHost(snackbarHostState) },
             topBar = {
                 TopAppBar(
                     title = {
@@ -284,20 +370,96 @@ fun WatchappSettingsScreen(
                                 )
                             )
                         }
-                    }
+                    },
+                    actions = {
+                        if (webViewUuid != null) {
+                            Box {
+                                TopBarIconButtonWithToolTip(
+                                    onClick = { showPermissions = true },
+                                    icon = Icons.Outlined.Shield,
+                                    description = "Permissions",
+                                    badge = { PermissionRequestBadge(webViewUuid) },
+                                )
+                                MenuBelowAnchor(
+                                    expanded = showPermissions,
+                                    onDismissRequest = { showPermissions = false },
+                                ) {
+                                    AppPermissionsSection(webViewUuid, collapsible = false)
+                                }
+                            }
+                        }
+                    },
                 )
             }
         ) { paddingValues ->
             val pageNetwork = network
             if (webViewUuid != null && pageNetwork != null) {
-                WebView(
-                    state = state,
-                    modifier = Modifier.fillMaxSize().padding(paddingValues),
-                    navigator = navigator,
-                    platformWebViewParams = platformParams,
-                    factory = { webViewFactory(it, webViewUuid, bridge, mayLoad, pageNetwork) }
-                )
+                if (!pageNetwork.enforced) {
+                    Text(
+                        "These settings can't be opened safely on this device.",
+                        modifier = Modifier.padding(paddingValues).padding(16.dp),
+                    )
+                } else {
+                    WebView(
+                        state = state,
+                        modifier = Modifier.fillMaxSize().padding(paddingValues),
+                        navigator = navigator,
+                        platformWebViewParams = platformParams,
+                        factory = { webViewFactory(it, webViewUuid, bridge, mayLoad, pageNetwork) }
+                    )
+                }
             }
+        }
+    }
+}
+
+/** Always opens below its anchor, so the anchor stays visible and tappable to close it. */
+@Composable
+private fun MenuBelowAnchor(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    if (!expanded) return
+    val density = LocalDensity.current
+    val margin = with(density) { 8.dp.roundToPx() }
+    var maxHeight by remember { mutableStateOf(Dp.Unspecified) }
+    val positionProvider = remember(density, margin) {
+        object : PopupPositionProvider {
+            override fun calculatePosition(
+                anchorBounds: IntRect,
+                windowSize: IntSize,
+                layoutDirection: LayoutDirection,
+                popupContentSize: IntSize,
+            ): IntOffset {
+                maxHeight = with(density) { (windowSize.height - anchorBounds.bottom.coerceAtLeast(0) - margin).coerceAtLeast(0).toDp() }
+                val x = if (layoutDirection == LayoutDirection.Ltr) {
+                    anchorBounds.right - popupContentSize.width
+                } else {
+                    anchorBounds.left
+                }
+                return IntOffset(x.coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0)), anchorBounds.bottom)
+            }
+        }
+    }
+    Popup(
+        popupPositionProvider = positionProvider,
+        onDismissRequest = onDismissRequest,
+        properties = PopupProperties(focusable = true),
+    ) {
+        Surface(
+            shape = MenuDefaults.shape,
+            color = MenuDefaults.containerColor,
+            tonalElevation = MenuDefaults.TonalElevation,
+            shadowElevation = MenuDefaults.ShadowElevation,
+        ) {
+            Column(
+                modifier = Modifier.widthIn(max = 400.dp)
+                    .heightIn(max = maxHeight)
+                    .verticalScroll(rememberScrollState())
+                    .padding(vertical = 8.dp),
+                content = content,
+            )
         }
     }
 }
@@ -317,6 +479,7 @@ internal fun normalizeWatchappSettingsUrl(url: String): String {
 }
 
 private class SettingsRequestInterceptor(
+    private val openStoreAppLink: (String) -> Boolean,
     private val onError: suspend () -> Unit,
     private val onSuccess: suspend (String) -> Unit,
 ) : RequestInterceptor {
@@ -327,6 +490,9 @@ private class SettingsRequestInterceptor(
         request: WebRequest,
         navigator: WebViewNavigator,
     ): WebRequestInterceptResult {
+        if (request.isForMainFrame && openStoreAppLink(request.url)) {
+            return WebRequestInterceptResult.Reject
+        }
         if (!request.url.startsWith(PREFIX)) {
             return WebRequestInterceptResult.Allow
         }
